@@ -1,0 +1,155 @@
+.app-shell {
+  position: relative;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(245, 158, 11, 0.18), transparent 26%),
+    radial-gradient(circle at bottom right, rgba(14, 165, 233, 0.16), transparent 24%),
+    linear-gradient(135deg, #f4efe6 0%, #dce7ef 50%, #f5f2ec 100%);
+  overflow: hidden;
+}
+
+.map-frame {
+  position: absolute;
+  inset: 0;
+}
+
+.control-card {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  z-index: 2;
+  width: min(24rem, calc(100vw - 2rem));
+  padding: 1rem;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 1.25rem;
+  background: rgba(255, 251, 245, 0.88);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.16);
+  backdrop-filter: blur(14px);
+}
+
+.eyebrow,
+.label,
+.runtime-message,
+.instructions p,
+.supporting-text,
+.route-summary small {
+  margin: 0;
+}
+
+.eyebrow,
+.label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #7c5a2d;
+}
+
+.control-card h1 {
+  margin: 0.25rem 0 0.5rem;
+  font-size: clamp(1.8rem, 4vw, 2.4rem);
+  line-height: 0.95;
+  color: #111827;
+}
+
+.supporting-text {
+  color: #334155;
+  line-height: 1.45;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+  margin-top: 1rem;
+}
+
+.status-grid div,
+.route-summary {
+  padding: 0.8rem 0.9rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.status-grid strong,
+.route-summary strong {
+  display: block;
+  margin-top: 0.25rem;
+  color: #0f172a;
+}
+
+.instructions {
+  margin-top: 1rem;
+  padding: 0.9rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.instructions p + p {
+  margin-top: 0.35rem;
+}
+
+.actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.actions button {
+  flex: 1;
+  border: 0;
+  border-radius: 999px;
+  padding: 0.8rem 1rem;
+  font: inherit;
+  font-weight: 700;
+  color: #fffaf0;
+  background: linear-gradient(135deg, #0f172a, #334155);
+  cursor: pointer;
+}
+
+.actions button:last-child {
+  background: linear-gradient(135deg, #d97706, #f59e0b);
+}
+
+.route-summary {
+  margin-top: 1rem;
+}
+
+.route-summary small {
+  display: block;
+  margin-top: 0.3rem;
+  color: #475569;
+}
+
+.runtime-message {
+  margin-top: 1rem;
+  padding: 0.9rem;
+  border-radius: 1rem;
+  line-height: 1.45;
+  color: #334155;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.runtime-message.is-error {
+  color: #991b1b;
+  background: rgba(254, 226, 226, 0.88);
+}
+
+.maplibregl-ctrl-top-right {
+  top: 1rem;
+  right: 1rem;
+}
+
+@media (max-width: 720px) {
+  .control-card {
+    top: auto;
+    right: 1rem;
+    bottom: 1rem;
+    left: 1rem;
+    width: auto;
+  }
+
+  .actions {
+    flex-direction: column;
+  }
+}
