@@ -1,4 +1,5 @@
 import type { CompactRoadEdge, Coordinate, RoadGraphFile, RouteResult } from '../types/offline'
+import type { RouteAvoidanceHotspot } from '../types/cityIntel'
 import { bucketKey, metersBetween } from './geo'
 
 type QueuedNode = {
@@ -16,6 +17,29 @@ type RoadGraphEdge = {
 type PathStep = {
   previous: number
   edge: RoadGraphEdge
+}
+
+type RouteOptions = {
+  hotspots?: RouteAvoidanceHotspot[]
+}
+
+function pointToSegmentDistanceMeters(point: Coordinate, start: Coordinate, end: Coordinate) {
+  const lngScale = 109_000
+  const latScale = 111_320
+  const px = point[0] * lngScale
+  const py = point[1] * latScale
+  const sx = start[0] * lngScale
+  const sy = start[1] * latScale
+  const ex = end[0] * lngScale
+  const ey = end[1] * latScale
+  const dx = ex - sx
+  const dy = ey - sy
+  const lengthSquared = dx * dx + dy * dy || 1
+  const t = Math.max(0, Math.min(1, ((px - sx) * dx + (py - sy) * dy) / lengthSquared))
+  const closestX = sx + t * dx
+  const closestY = sy + t * dy
+
+  return Math.hypot(px - closestX, py - closestY)
 }
 
 export class OfflineRouter {
@@ -47,7 +71,7 @@ export class OfflineRouter {
     })
   }
 
-  route(startPoint: Coordinate, endPoint: Coordinate): RouteResult | null {
+  route(startPoint: Coordinate, endPoint: Coordinate, options: RouteOptions = {}): RouteResult | null {
     const startNodeId = this.findNearestNode(startPoint)
     const endNodeId = this.findNearestNode(endPoint)
 
@@ -90,9 +114,10 @@ export class OfflineRouter {
 
       const currentGScore = gScore.get(current.id) ?? Number.POSITIVE_INFINITY
       const outgoingEdges = this.adjacency.get(current.id) ?? []
+      const hotspots = options.hotspots ?? []
 
       outgoingEdges.forEach((edge) => {
-        const tentativeGScore = currentGScore + edge.length
+        const tentativeGScore = currentGScore + edge.length + this.edgePenalty(edge, hotspots)
 
         if (tentativeGScore >= (gScore.get(edge.to) ?? Number.POSITIVE_INFINITY)) {
           return
@@ -218,5 +243,34 @@ export class OfflineRouter {
       length,
       geometry,
     }
+  }
+
+  private edgePenalty(edge: RoadGraphEdge, hotspots: RouteAvoidanceHotspot[]) {
+    if (hotspots.length === 0) {
+      return 0
+    }
+
+    return hotspots.reduce((totalPenalty, hotspot) => {
+      let minDistance = Number.POSITIVE_INFINITY
+
+      for (let index = 1; index < edge.geometry.length; index += 1) {
+        const segmentDistance = pointToSegmentDistanceMeters(
+          hotspot.coordinate,
+          edge.geometry[index - 1],
+          edge.geometry[index],
+        )
+
+        if (segmentDistance < minDistance) {
+          minDistance = segmentDistance
+        }
+      }
+
+      if (!Number.isFinite(minDistance) || minDistance > hotspot.radiusMeters) {
+        return totalPenalty
+      }
+
+      const influence = 1 - minDistance / hotspot.radiusMeters
+      return totalPenalty + edge.length * hotspot.penalty * influence
+    }, 0)
   }
 }

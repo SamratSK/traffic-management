@@ -1,143 +1,86 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import maplibregl, { GeoJSONSource, Map } from 'maplibre-gl'
-import type { LngLatBoundsLike } from 'maplibre-gl'
-import { Protocol } from 'pmtiles'
+import maplibregl from 'maplibre-gl'
 import type { FeatureCollection, LineString, Point } from 'geojson'
+import type { Map } from 'maplibre-gl'
 
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './App.css'
 
-import { formatDistance } from './lib/geo'
-import { buildOfflineStyle } from './lib/mapStyle'
+import { ControlPanel } from './components/ControlPanel'
+import { MAP_SOURCE_IDS } from './constants/map'
+import { cityIntelConnector } from './lib/cityIntelConnector'
+import {
+  buildClickPointsGeoJson,
+  buildRoutePairGeoJson,
+  buildVehicleGeoJson,
+  emptyCrowdHeatmapCollection,
+  emptyInfluenceCollection,
+  emptyPointCollection,
+  emptyTrafficCollection,
+  setSourceData,
+} from './lib/mapData'
+import { createOfflineMap, ensureMapLayers, ensurePmtilesProtocol, resetMapSources } from './lib/mapSetup'
+import { pickBusyDemoPoints } from './lib/demoRoute'
 import { OfflineRouter } from './lib/router'
+import { buildRouteAvoidanceHotspots } from './lib/routeHotspots'
 import { normalizeSignalsToGeoJson } from './lib/signals'
+import { buildRouteMetrics, samplePositionAlongRoute } from './lib/vehicle'
 import type {
-  Coordinate,
-  OverpassResponse,
-  RoadGraphFile,
-  RouteResult,
-  TrafficRoadProperties,
-} from './types/offline'
+  CrowdDensityResponse,
+  CrowdHeatmapCollection,
+  EventsResponse,
+  InfluenceHotspotCollection,
+  LiveTrafficResponse,
+  PeakTrafficResponse,
+} from './types/cityIntel'
+import type { Coordinate, OverpassResponse, RoadGraphFile, RouteResult, TrafficRoadProperties } from './types/offline'
 
-const BENGALURU_CENTER: Coordinate = [77.5946, 12.9716]
-const BENGALURU_BOUNDS: LngLatBoundsLike = [
-  [77.4096, 12.8342],
-  [77.8108, 13.1735],
-]
-const ROUTE_SOURCE_ID = 'route-source'
-const CLICK_POINTS_SOURCE_ID = 'click-points-source'
-const TRAFFIC_SIGNALS_SOURCE_ID = 'traffic-signals-source'
-const TRAFFIC_LEVELS_SOURCE_ID = 'traffic-levels-source'
-
-let protocolRegistered = false
-
-if (!protocolRegistered) {
-  const protocol = new Protocol()
-  maplibregl.addProtocol('pmtiles', protocol.tile)
-  protocolRegistered = true
-}
-
-function emptyLineCollection(): FeatureCollection<LineString> {
-  return {
-    type: 'FeatureCollection',
-    features: [],
-  }
-}
-
-function emptyPointCollection(): FeatureCollection<Point> {
-  return {
-    type: 'FeatureCollection',
-    features: [],
-  }
-}
-
-function emptyTrafficCollection(): FeatureCollection<LineString, TrafficRoadProperties> {
-  return {
-    type: 'FeatureCollection',
-    features: [],
-  }
-}
-
-function buildRouteGeoJson(route: RouteResult | null): FeatureCollection<LineString> {
-  if (!route) {
-    return emptyLineCollection()
-  }
-
-  return {
-    type: 'FeatureCollection',
-    features: [
-      {
-        type: 'Feature',
-        properties: {},
-        geometry: {
-          type: 'LineString',
-          coordinates: route.coordinates,
-        },
-      },
-    ],
-  }
-}
-
-function buildClickPointsGeoJson(
-  start: Coordinate | null,
-  end: Coordinate | null,
-): FeatureCollection<Point, { role: 'start' | 'end' }> {
-  const features = []
-
-  if (start) {
-    features.push({
-      type: 'Feature' as const,
-      properties: { role: 'start' as const },
-      geometry: { type: 'Point' as const, coordinates: start },
-    })
-  }
-
-  if (end) {
-    features.push({
-      type: 'Feature' as const,
-      properties: { role: 'end' as const },
-      geometry: { type: 'Point' as const, coordinates: end },
-    })
-  }
-
-  return {
-    type: 'FeatureCollection',
-    features,
-  }
-}
-
-function setSourceData(map: Map | null, sourceId: string, data: GeoJSON.GeoJSON) {
-  if (!map) {
-    return
-  }
-
-  const source = map.getSource(sourceId)
-  if (source && 'setData' in source) {
-    ;(source as GeoJSONSource).setData(data)
-  }
-}
+ensurePmtilesProtocol()
 
 export default function App() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<Map | null>(null)
   const startPointRef = useRef<Coordinate | null>(null)
   const endPointRef = useRef<Coordinate | null>(null)
+  const vehicleAnimationFrameRef = useRef<number | null>(null)
+  const vehicleAnimationStartRef = useRef<number | null>(null)
 
   const [router, setRouter] = useState<OfflineRouter | null>(null)
   const [graphReady, setGraphReady] = useState(false)
   const [signals, setSignals] = useState<FeatureCollection<Point>>(emptyPointCollection)
   const [trafficLevels, setTrafficLevels] =
     useState<FeatureCollection<LineString, TrafficRoadProperties>>(emptyTrafficCollection)
+  const [crowdHeatmap, setCrowdHeatmap] = useState<CrowdHeatmapCollection>(emptyCrowdHeatmapCollection)
+  const [trafficInfluence, setTrafficInfluence] =
+    useState<InfluenceHotspotCollection>(emptyInfluenceCollection)
+  const [eventInfluence, setEventInfluence] =
+    useState<InfluenceHotspotCollection>(emptyInfluenceCollection)
   const [startPoint, setStartPoint] = useState<Coordinate | null>(null)
   const [endPoint, setEndPoint] = useState<Coordinate | null>(null)
+  const [shortestRoute, setShortestRoute] = useState<RouteResult | null>(null)
   const [route, setRoute] = useState<RouteResult | null>(null)
+  const [selectedPincode, setSelectedPincode] = useState(cityIntelConnector.supportedPincodes[0] ?? '560070')
+  const [liveTraffic, setLiveTraffic] = useState<LiveTrafficResponse | null>(null)
+  const [peakTraffic, setPeakTraffic] = useState<PeakTrafficResponse | null>(null)
+  const [crowdDensity, setCrowdDensity] = useState<CrowdDensityResponse | null>(null)
+  const [events, setEvents] = useState<EventsResponse | null>(null)
+  const [showTrafficSignals, setShowTrafficSignals] = useState(true)
+  const [vehiclePosition, setVehiclePosition] = useState<Coordinate | null>(null)
+  const [vehicleSpeedKph, setVehicleSpeedKph] = useState(32)
   const [error, setError] = useState('')
+  const [connectorError, setConnectorError] = useState('')
 
-  const clickPoints = useMemo(
-    () => buildClickPointsGeoJson(startPoint, endPoint),
-    [startPoint, endPoint],
+  const clickPoints = useMemo(() => buildClickPointsGeoJson(startPoint, endPoint), [startPoint, endPoint])
+  const routeGeoJson = useMemo(() => buildRoutePairGeoJson(route, 'optimized'), [route])
+  const shortestRouteGeoJson = useMemo(
+    () => buildRoutePairGeoJson(shortestRoute, 'shortest'),
+    [shortestRoute],
   )
-  const routeGeoJson = useMemo(() => buildRouteGeoJson(route), [route])
+  const vehicleGeoJson = useMemo(() => buildVehicleGeoJson(vehiclePosition), [vehiclePosition])
+  const routeAvoidanceHotspots = useMemo(
+    () => buildRouteAvoidanceHotspots(crowdHeatmap, trafficInfluence, eventInfluence),
+    [crowdHeatmap, trafficInfluence, eventInfluence],
+  )
 
   useEffect(() => {
     startPointRef.current = startPoint
@@ -161,11 +104,9 @@ export default function App() {
         if (!graphResponse.ok) {
           throw new Error('Missing /offline/road-graph.json. Run npm run build:graph first.')
         }
-
         if (!signalsResponse.ok) {
           throw new Error('Missing /offline/traffic-signals.json.')
         }
-
         if (!trafficLevelsResponse.ok) {
           throw new Error('Missing /offline/traffic-levels.geojson. Run npm run build:traffic first.')
         }
@@ -188,287 +129,79 @@ export default function App() {
         setGraphReady(true)
         setSignals(normalizeSignalsToGeoJson(rawSignals))
         setTrafficLevels(trafficLevelsGeoJson)
+        setCrowdHeatmap(await cityIntelConnector.getCityCrowdHeatmap())
       } catch (loadError) {
-        if (cancelled) {
-          return
+        if (!cancelled) {
+          setError(loadError instanceof Error ? loadError.message : 'Unable to load offline map data.')
         }
-
-        const message =
-          loadError instanceof Error ? loadError.message : 'Unable to load offline map data.'
-        setError(message)
       }
     }
 
     loadOfflineData()
-
     return () => {
       cancelled = true
     }
   }, [])
 
   useEffect(() => {
+    let cancelled = false
+
+    async function loadConnectorData() {
+      try {
+        const [
+          nextLiveTraffic,
+          nextPeakTraffic,
+          nextCrowdDensity,
+          nextEvents,
+          nextTrafficInfluence,
+          nextEventInfluence,
+        ] = await Promise.all([
+          cityIntelConnector.getLiveTraffic(selectedPincode),
+          cityIntelConnector.getPeakTraffic(selectedPincode),
+          cityIntelConnector.getCrowdDensity(selectedPincode),
+          cityIntelConnector.getEvents(selectedPincode),
+          cityIntelConnector.getTrafficInfluence(selectedPincode),
+          cityIntelConnector.getEventInfluence(selectedPincode),
+        ])
+
+        if (cancelled) {
+          return
+        }
+
+        setLiveTraffic(nextLiveTraffic)
+        setPeakTraffic(nextPeakTraffic)
+        setCrowdDensity(nextCrowdDensity)
+        setEvents(nextEvents)
+        setTrafficInfluence(nextTrafficInfluence)
+        setEventInfluence(nextEventInfluence)
+        setConnectorError('')
+      } catch (loadError) {
+        if (!cancelled) {
+          setConnectorError(
+            loadError instanceof Error ? loadError.message : 'Unable to load connector mock data.',
+          )
+        }
+      }
+    }
+
+    loadConnectorData()
+    return () => {
+      cancelled = true
+    }
+  }, [selectedPincode])
+
+  useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) {
       return
     }
 
-    const map = new maplibregl.Map({
-      container: mapContainerRef.current,
-      style: buildOfflineStyle(),
-      center: BENGALURU_CENTER,
-      zoom: 12.5,
-      pitch: 52,
-      bearing: -12,
-      maxPitch: 60,
-      minZoom: 10.8,
-      maxZoom: 18.5,
-      maxBounds: BENGALURU_BOUNDS,
-    })
-
+    const map = createOfflineMap(mapContainerRef.current)
     mapRef.current = map
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right')
 
     map.on('style.load', () => {
-      const firstSymbolLayerId = map
-        .getStyle()
-        ?.layers?.find((layer) => layer.type === 'symbol')?.id
-
-      if (!map.getSource(ROUTE_SOURCE_ID)) {
-        map.addSource(ROUTE_SOURCE_ID, { type: 'geojson', data: emptyLineCollection() })
-      }
-
-      if (!map.getSource(CLICK_POINTS_SOURCE_ID)) {
-        map.addSource(CLICK_POINTS_SOURCE_ID, { type: 'geojson', data: emptyPointCollection() })
-      }
-
-      if (!map.getSource(TRAFFIC_SIGNALS_SOURCE_ID)) {
-        map.addSource(TRAFFIC_SIGNALS_SOURCE_ID, { type: 'geojson', data: emptyPointCollection() })
-      }
-
-      if (!map.getSource(TRAFFIC_LEVELS_SOURCE_ID)) {
-        map.addSource(TRAFFIC_LEVELS_SOURCE_ID, {
-          type: 'geojson',
-          data: emptyTrafficCollection(),
-        })
-      }
-
-      if (!map.getLayer('3d-buildings')) {
-        map.addLayer(
-          {
-            id: '3d-buildings',
-            type: 'fill-extrusion',
-            source: 'bengaluru',
-            'source-layer': 'buildings',
-            minzoom: 13.6,
-            paint: {
-              'fill-extrusion-color': [
-                'interpolate',
-                ['linear'],
-                ['coalesce', ['get', 'render_height'], ['get', 'height'], 8],
-                0,
-                '#dbe4ea',
-                120,
-                '#94a3b8',
-              ],
-              'fill-extrusion-height': [
-                'coalesce',
-                ['get', 'render_height'],
-                ['get', 'height'],
-                8,
-              ],
-              'fill-extrusion-base': [
-                'coalesce',
-                ['get', 'render_min_height'],
-                ['get', 'min_height'],
-                0,
-              ],
-              'fill-extrusion-opacity': 0.88,
-            },
-          },
-          firstSymbolLayerId,
-        )
-      }
-
-      if (!map.getLayer('route-layer-glow')) {
-        map.addLayer(
-          {
-            id: 'route-layer-glow',
-            type: 'line',
-            source: ROUTE_SOURCE_ID,
-            layout: {
-              'line-cap': 'round',
-              'line-join': 'round',
-            },
-            paint: {
-              'line-color': '#f97316',
-              'line-width': 13,
-              'line-opacity': 0.18,
-            },
-          },
-          firstSymbolLayerId,
-        )
-      }
-
-      if (!map.getLayer('traffic-levels-glow')) {
-        map.addLayer(
-          {
-            id: 'traffic-levels-glow',
-            type: 'line',
-            source: TRAFFIC_LEVELS_SOURCE_ID,
-            layout: {
-              'line-cap': 'round',
-              'line-join': 'round',
-            },
-            paint: {
-              'line-color': [
-                'match',
-                ['get', 'trafficLevel'],
-                'red',
-                '#ef4444',
-                '#f59e0b',
-              ],
-              'line-width': [
-                'interpolate',
-                ['linear'],
-                ['zoom'],
-                11,
-                ['match', ['get', 'roadClass'], 'main', 6, 4],
-                15,
-                ['match', ['get', 'roadClass'], 'main', 14, 9],
-              ],
-              'line-opacity': 0.22,
-              'line-blur': 1.2,
-            },
-          },
-          firstSymbolLayerId,
-        )
-      }
-
-      if (!map.getLayer('traffic-levels-layer')) {
-        map.addLayer(
-          {
-            id: 'traffic-levels-layer',
-            type: 'line',
-            source: TRAFFIC_LEVELS_SOURCE_ID,
-            layout: {
-              'line-cap': 'round',
-              'line-join': 'round',
-            },
-            paint: {
-              'line-color': [
-                'match',
-                ['get', 'trafficLevel'],
-                'red',
-                '#dc2626',
-                '#f59e0b',
-              ],
-              'line-width': [
-                'interpolate',
-                ['linear'],
-                ['zoom'],
-                11,
-                ['match', ['get', 'roadClass'], 'main', 3.2, 2.2],
-                15,
-                ['match', ['get', 'roadClass'], 'main', 7.5, 4.5],
-              ],
-              'line-opacity': 0.94,
-              'line-dasharray': [
-                'match',
-                ['get', 'trafficLevel'],
-                'red',
-                ['literal', [1, 0]],
-                ['literal', [1.4, 0.7]],
-              ],
-            },
-          },
-          firstSymbolLayerId,
-        )
-      }
-
-      if (!map.getLayer('route-layer')) {
-        map.addLayer(
-          {
-            id: 'route-layer',
-            type: 'line',
-            source: ROUTE_SOURCE_ID,
-            layout: {
-              'line-cap': 'round',
-              'line-join': 'round',
-            },
-            paint: {
-              'line-color': '#f59e0b',
-              'line-width': 7,
-              'line-opacity': 0.96,
-            },
-          },
-          firstSymbolLayerId,
-        )
-      }
-
-      if (!map.getLayer('traffic-signals-layer')) {
-        map.addLayer(
-          {
-            id: 'traffic-signals-layer',
-            type: 'circle',
-            source: TRAFFIC_SIGNALS_SOURCE_ID,
-            minzoom: 11.5,
-            paint: {
-              'circle-color': [
-                'match',
-                ['get', 'kind'],
-                'crossing',
-                '#ef4444',
-                '#b91c1c',
-              ],
-              'circle-radius': [
-                'interpolate',
-                ['linear'],
-                ['zoom'],
-                11.5,
-                2.5,
-                14,
-                4.5,
-                17,
-                6.5,
-              ],
-              'circle-stroke-width': 1.2,
-              'circle-stroke-color': 'rgba(255,255,255,0.9)',
-              'circle-opacity': 0.92,
-            },
-          },
-          firstSymbolLayerId,
-        )
-      }
-
-      if (!map.getLayer('click-points-layer')) {
-        map.addLayer({
-          id: 'click-points-layer',
-          type: 'circle',
-          source: CLICK_POINTS_SOURCE_ID,
-          paint: {
-            'circle-radius': [
-              'match',
-              ['get', 'role'],
-              'start',
-              8,
-              9,
-            ],
-            'circle-color': [
-              'match',
-              ['get', 'role'],
-              'start',
-              '#16a34a',
-              '#2563eb',
-            ],
-            'circle-stroke-width': 2,
-            'circle-stroke-color': '#ffffff',
-          },
-        })
-      }
-
-      setSourceData(map, TRAFFIC_SIGNALS_SOURCE_ID, emptyPointCollection())
-      setSourceData(map, TRAFFIC_LEVELS_SOURCE_ID, emptyTrafficCollection())
-      setSourceData(map, CLICK_POINTS_SOURCE_ID, emptyPointCollection())
-      setSourceData(map, ROUTE_SOURCE_ID, emptyLineCollection())
+      ensureMapLayers(map)
+      resetMapSources(map)
     })
 
     map.on('click', (event) => {
@@ -478,6 +211,7 @@ export default function App() {
         setStartPoint(clickedPoint)
         setEndPoint(null)
         setRoute(null)
+        setShortestRoute(null)
         return
       }
 
@@ -491,35 +225,127 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    setSourceData(mapRef.current, TRAFFIC_SIGNALS_SOURCE_ID, signals)
+    setSourceData(mapRef.current, MAP_SOURCE_IDS.trafficSignals, signals)
   }, [signals])
 
   useEffect(() => {
-    setSourceData(mapRef.current, TRAFFIC_LEVELS_SOURCE_ID, trafficLevels)
+    const map = mapRef.current
+    if (!map || !map.getLayer('traffic-signals-layer')) {
+      return
+    }
+
+    map.setLayoutProperty('traffic-signals-layer', 'visibility', showTrafficSignals ? 'visible' : 'none')
+  }, [showTrafficSignals])
+
+  useEffect(() => {
+    setSourceData(mapRef.current, MAP_SOURCE_IDS.trafficLevels, trafficLevels)
   }, [trafficLevels])
 
   useEffect(() => {
-    setSourceData(mapRef.current, CLICK_POINTS_SOURCE_ID, clickPoints)
+    setSourceData(mapRef.current, MAP_SOURCE_IDS.crowdHeatmap, crowdHeatmap)
+  }, [crowdHeatmap])
+
+  useEffect(() => {
+    setSourceData(mapRef.current, MAP_SOURCE_IDS.trafficInfluence, trafficInfluence)
+  }, [trafficInfluence])
+
+  useEffect(() => {
+    setSourceData(mapRef.current, MAP_SOURCE_IDS.eventInfluence, eventInfluence)
+  }, [eventInfluence])
+
+  useEffect(() => {
+    setSourceData(mapRef.current, MAP_SOURCE_IDS.clickPoints, clickPoints)
   }, [clickPoints])
 
   useEffect(() => {
-    setSourceData(mapRef.current, ROUTE_SOURCE_ID, routeGeoJson)
+    setSourceData(mapRef.current, MAP_SOURCE_IDS.shortestRoute, shortestRouteGeoJson)
+  }, [shortestRouteGeoJson])
+
+  useEffect(() => {
+    setSourceData(mapRef.current, MAP_SOURCE_IDS.route, routeGeoJson)
   }, [routeGeoJson])
+
+  useEffect(() => {
+    setSourceData(mapRef.current, MAP_SOURCE_IDS.vehicle, vehicleGeoJson)
+  }, [vehicleGeoJson])
 
   useEffect(() => {
     if (!router || !startPoint || !endPoint) {
       return
     }
 
-    const nextRoute = router.route(startPoint, endPoint)
-    if (!nextRoute) {
+    const nextShortestRoute = router.route(startPoint, endPoint)
+    const nextOptimizedRoute = router.route(startPoint, endPoint, { hotspots: routeAvoidanceHotspots })
+    if (!nextShortestRoute || !nextOptimizedRoute) {
       setError('No offline driving route was found between the selected points.')
       return
     }
 
     setError('')
-    setRoute(nextRoute)
-  }, [endPoint, router, startPoint])
+    setShortestRoute(nextShortestRoute)
+    setRoute(nextOptimizedRoute)
+  }, [endPoint, routeAvoidanceHotspots, router, startPoint])
+
+  function generateBusyDemoRoute() {
+    const demoPoints = pickBusyDemoPoints(routeAvoidanceHotspots)
+    if (!demoPoints) {
+      setError('Busy demo route is not available yet.')
+      return
+    }
+
+    setError('')
+    setStartPoint(demoPoints.startPoint)
+    setEndPoint(demoPoints.endPoint)
+  }
+
+  useEffect(() => {
+    if (vehicleAnimationFrameRef.current) {
+      cancelAnimationFrame(vehicleAnimationFrameRef.current)
+      vehicleAnimationFrameRef.current = null
+    }
+
+    vehicleAnimationStartRef.current = null
+
+    if (!route || route.coordinates.length < 2) {
+      setVehiclePosition(null)
+      return
+    }
+
+    const metrics = buildRouteMetrics(route.coordinates)
+    const speedMetersPerSecond = vehicleSpeedKph / 3.6
+    setVehiclePosition(route.coordinates[0])
+
+    const animateVehicle = (timestamp: number) => {
+      if (vehicleAnimationStartRef.current === null) {
+        vehicleAnimationStartRef.current = timestamp
+      }
+
+      const elapsedSeconds = (timestamp - vehicleAnimationStartRef.current) / 1000
+      const traveledDistance = elapsedSeconds * speedMetersPerSecond
+      const nextPosition = samplePositionAlongRoute(metrics.path, metrics.cumulativeDistances, traveledDistance)
+
+      if (nextPosition) {
+        setVehiclePosition(nextPosition)
+      }
+
+      if (traveledDistance < metrics.totalDistanceMeters) {
+        vehicleAnimationFrameRef.current = requestAnimationFrame(animateVehicle)
+        return
+      }
+
+      setVehiclePosition(metrics.path[metrics.path.length - 1] ?? null)
+      vehicleAnimationFrameRef.current = null
+    }
+
+    vehicleAnimationFrameRef.current = requestAnimationFrame(animateVehicle)
+
+    return () => {
+      if (vehicleAnimationFrameRef.current) {
+        cancelAnimationFrame(vehicleAnimationFrameRef.current)
+        vehicleAnimationFrameRef.current = null
+      }
+    }
+  }, [route, vehicleSpeedKph])
 
   useEffect(() => {
     if (!route || !mapRef.current) {
@@ -534,83 +360,34 @@ export default function App() {
   return (
     <main className="app-shell">
       <div className="map-frame" ref={mapContainerRef} />
-
-      <section className="control-card">
-        <p className="eyebrow">Offline Bangalore Navigator</p>
-        <h1>3D Bengaluru Drive Map</h1>
-        <p className="supporting-text">
-          Fully local PMTiles basemap, local traffic signals, and browser-side A* routing.
-        </p>
-
-        <div className="status-grid">
-          <div>
-            <span className="label">Basemap</span>
-            <strong>PMTiles</strong>
-          </div>
-          <div>
-            <span className="label">Signals</span>
-            <strong>{signals.features.length}</strong>
-          </div>
-          <div>
-            <span className="label">Road Graph</span>
-            <strong>{graphReady ? 'Ready' : 'Missing'}</strong>
-          </div>
-          <div>
-            <span className="label">Routing</span>
-            <strong>A*</strong>
-          </div>
-          <div>
-            <span className="label">Traffic Roads</span>
-            <strong>{trafficLevels.features.length}</strong>
-          </div>
-          <div>
-            <span className="label">Overlay</span>
-            <strong>Red / Orange</strong>
-          </div>
-        </div>
-
-        <div className="instructions">
-          <p>1. Click once to place the start point.</p>
-          <p>2. Click again to place the destination and compute the route.</p>
-          <p>3. Click a third time to begin a new route.</p>
-        </div>
-
-        <div className="actions">
-          <button
-            type="button"
-            onClick={() => {
-              setStartPoint(null)
-              setEndPoint(null)
-              setRoute(null)
-              setError('')
-            }}
-          >
-            Reset Route
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              mapRef.current?.fitBounds(BENGALURU_BOUNDS, {
-                padding: 40,
-                duration: 700,
-              })
-            }}
-          >
-            Reset View
-          </button>
-        </div>
-
-        <div className="route-summary">
-          <span className="label">Route Summary</span>
-          <strong>{route ? formatDistance(route.distanceMeters) : 'Select two points'}</strong>
-          <small>{route ? `${route.visitedNodes} nodes explored offline` : 'No route yet'}</small>
-        </div>
-
-        <p className={`runtime-message${error ? ' is-error' : ''}`}>
-          {error ||
-            'Synthetic traffic is rendered from a local GeoJSON overlay generated from Bengaluru road classes. Main roads and sub-roads are colored red and orange offline.'}
-        </p>
-      </section>
+      <ControlPanel
+        signals={signals}
+        graphReady={graphReady}
+        trafficLevels={trafficLevels}
+        crowdHeatmap={crowdHeatmap}
+        routeAvoidanceHotspots={routeAvoidanceHotspots}
+        selectedPincode={selectedPincode}
+        setSelectedPincode={setSelectedPincode}
+        showTrafficSignals={showTrafficSignals}
+        setShowTrafficSignals={setShowTrafficSignals}
+        vehicleSpeedKph={vehicleSpeedKph}
+        setVehicleSpeedKph={setVehicleSpeedKph}
+        setStartPoint={setStartPoint as (value: null) => void}
+        setEndPoint={setEndPoint as (value: null) => void}
+        setRoute={setRoute as (value: null) => void}
+        setShortestRoute={setShortestRoute as (value: null) => void}
+        setError={setError}
+        map={mapRef.current}
+        route={route}
+        shortestRoute={shortestRoute}
+        liveTraffic={liveTraffic}
+        peakTraffic={peakTraffic}
+        crowdDensity={crowdDensity}
+        events={events}
+        error={error}
+        connectorError={connectorError}
+        generateBusyDemoRoute={generateBusyDemoRoute}
+      />
     </main>
   )
 }
