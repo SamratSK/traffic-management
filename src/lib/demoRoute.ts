@@ -2,6 +2,11 @@ import type { OfflineRouter } from './router'
 import type { RouteAvoidanceHotspot } from '../types/cityIntel'
 import type { Coordinate } from '../types/offline'
 
+type DemoPointPair = {
+  startPoint: Coordinate
+  endPoint: Coordinate
+}
+
 function projectedHotspotPoints(router: OfflineRouter, hotspots: RouteAvoidanceHotspot[]) {
   return hotspots
     .map((hotspot) => ({
@@ -20,13 +25,14 @@ function farEnoughApart(pointA: Coordinate, pointB: Coordinate) {
   return lngDelta + latDelta > 0.03
 }
 
+function coordinateKey([lng, lat]: Coordinate) {
+  return `${lng.toFixed(5)}:${lat.toFixed(5)}`
+}
+
 export function pickBusyDemoPoints(
   router: OfflineRouter,
   hotspots: RouteAvoidanceHotspot[],
-): {
-  startPoint: Coordinate
-  endPoint: Coordinate
-} | null {
+): DemoPointPair | null {
   if (hotspots.length < 2) {
     return null
   }
@@ -67,4 +73,82 @@ export function pickBusyDemoPoints(
     startPoint: pool[0].roadPoint,
     endPoint: pool[pool.length - 1].roadPoint,
   }
+}
+
+export function pickBusyDemoFleetPoints(
+  router: OfflineRouter,
+  hotspots: RouteAvoidanceHotspot[],
+  vehicleCount: number,
+): DemoPointPair[] {
+  if (vehicleCount <= 0 || hotspots.length < 2) {
+    return []
+  }
+
+  const pool = projectedHotspotPoints(
+    router,
+    [...hotspots].sort((left, right) => right.penalty - left.penalty).slice(0, Math.min(24, hotspots.length)),
+  )
+
+  if (pool.length < 2) {
+    return []
+  }
+
+  const uniqueStarts = new Map<string, Coordinate>()
+  for (const item of pool) {
+    uniqueStarts.set(coordinateKey(item.roadPoint), item.roadPoint)
+  }
+
+  const startCandidates = [...uniqueStarts.values()]
+  const endCandidates = pool.map((item) => item.roadPoint)
+  const results: DemoPointPair[] = []
+  const usedStartKeys = new Set<string>()
+
+  const sharedVehicles = Math.min(
+    Math.max(0, Math.round(vehicleCount * 0.1)),
+    Math.max(0, vehicleCount - 1),
+  )
+  const sharedGroupCount = sharedVehicles > 0 ? Math.min(3, Math.max(1, Math.ceil(sharedVehicles / 3))) : 0
+  const sharedEnds = Array.from({ length: sharedGroupCount }, (_, index) => endCandidates[index % endCandidates.length])
+
+  for (let vehicleIndex = 0; vehicleIndex < vehicleCount; vehicleIndex += 1) {
+    let pair: DemoPointPair | null = null
+    const forcedSharedEnd = vehicleIndex < sharedVehicles && sharedEnds.length > 0
+      ? sharedEnds[vehicleIndex % sharedEnds.length]
+      : null
+
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const availableStarts = startCandidates.filter((point) => !usedStartKeys.has(coordinateKey(point)))
+      if (availableStarts.length === 0) {
+        break
+      }
+
+      const startPoint = availableStarts[Math.floor(Math.random() * availableStarts.length)]
+      const endPoint = forcedSharedEnd ?? endCandidates[Math.floor(Math.random() * endCandidates.length)]
+
+      if (coordinateKey(startPoint) === coordinateKey(endPoint)) {
+        continue
+      }
+
+      if (!farEnoughApart(startPoint, endPoint)) {
+        continue
+      }
+
+      const candidateRoute = router.route(startPoint, endPoint)
+      if (!candidateRoute || candidateRoute.distanceMeters < 2500) {
+        continue
+      }
+
+      pair = { startPoint, endPoint }
+      break
+    }
+
+    if (!pair) {
+      continue
+    }
+
+    usedStartKeys.add(coordinateKey(pair.startPoint))
+    results.push(pair)
+  }
+
+  return results
 }

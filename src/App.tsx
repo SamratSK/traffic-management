@@ -11,7 +11,10 @@ import { MAP_SOURCE_IDS } from './constants/map'
 import { cityIntelConnector } from './lib/cityIntelConnector'
 import {
   buildClickPointsGeoJson,
+  buildMultiClickPointsGeoJson,
+  buildRouteCollectionGeoJson,
   buildRoutePairGeoJson,
+  buildVehiclesGeoJson,
   buildVehicleGeoJson,
   emptyCrowdHeatmapCollection,
   emptyInfluenceCollection,
@@ -20,7 +23,7 @@ import {
   setSourceData,
 } from './lib/mapData'
 import { createOfflineMap, ensureMapLayers, ensurePmtilesProtocol, resetMapSources } from './lib/mapSetup'
-import { pickBusyDemoPoints } from './lib/demoRoute'
+import { pickBusyDemoFleetPoints } from './lib/demoRoute'
 import { OfflineRouter } from './lib/router'
 import { buildRouteAvoidanceHotspots } from './lib/routeHotspots'
 import { normalizeSignalsToGeoJson } from './lib/signals'
@@ -37,11 +40,22 @@ import type { Coordinate, OverpassResponse, RoadGraphFile, RouteResult, TrafficR
 
 ensurePmtilesProtocol()
 
+type DemoVehicleRoute = {
+  id: number
+  speedKph: number
+  start: Coordinate
+  end: Coordinate
+  shortestRoute: RouteResult
+  optimizedRoute: RouteResult
+}
+
 export default function App() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<Map | null>(null)
   const startPointRef = useRef<Coordinate | null>(null)
   const endPointRef = useRef<Coordinate | null>(null)
+  const demoVehicleRoutesRef = useRef<DemoVehicleRoute[]>([])
+  const demoVehiclePositionsRef = useRef<Array<{ id: number; position: Coordinate }>>([])
   const vehicleAnimationFrameRef = useRef<number | null>(null)
   const vehicleAnimationStartRef = useRef<number | null>(null)
 
@@ -55,6 +69,8 @@ export default function App() {
     useState<InfluenceHotspotCollection>(emptyInfluenceCollection)
   const [eventInfluence, setEventInfluence] =
     useState<InfluenceHotspotCollection>(emptyInfluenceCollection)
+  const [injectedEvents, setInjectedEvents] =
+    useState<InfluenceHotspotCollection>(emptyInfluenceCollection)
   const [startPoint, setStartPoint] = useState<Coordinate | null>(null)
   const [endPoint, setEndPoint] = useState<Coordinate | null>(null)
   const [shortestRoute, setShortestRoute] = useState<RouteResult | null>(null)
@@ -67,19 +83,60 @@ export default function App() {
   const [showTrafficSignals, setShowTrafficSignals] = useState(true)
   const [vehiclePosition, setVehiclePosition] = useState<Coordinate | null>(null)
   const [vehicleSpeedKph, setVehicleSpeedKph] = useState(32)
+  const [vehicleCount, setVehicleCount] = useState(3)
+  const [demoVehicleRoutes, setDemoVehicleRoutes] = useState<DemoVehicleRoute[]>([])
+  const [demoVehiclePositions, setDemoVehiclePositions] = useState<Array<{ id: number; position: Coordinate }>>([])
   const [error, setError] = useState('')
   const [connectorError, setConnectorError] = useState('')
 
-  const clickPoints = useMemo(() => buildClickPointsGeoJson(startPoint, endPoint), [startPoint, endPoint])
-  const routeGeoJson = useMemo(() => buildRoutePairGeoJson(route, 'optimized'), [route])
-  const shortestRouteGeoJson = useMemo(
-    () => buildRoutePairGeoJson(shortestRoute, 'shortest'),
-    [shortestRoute],
+  const clickPoints = useMemo(
+    () =>
+      demoVehicleRoutes.length > 0
+        ? buildMultiClickPointsGeoJson(
+            demoVehicleRoutes.map((item) => ({ start: item.start, end: item.end })),
+          )
+        : buildClickPointsGeoJson(startPoint, endPoint),
+    [demoVehicleRoutes, endPoint, startPoint],
   )
-  const vehicleGeoJson = useMemo(() => buildVehicleGeoJson(vehiclePosition), [vehiclePosition])
+  const routeGeoJson = useMemo(
+    () =>
+      demoVehicleRoutes.length > 0
+        ? buildRouteCollectionGeoJson(
+            demoVehicleRoutes.map((item) => ({
+              route: item.optimizedRoute,
+              label: 'optimized',
+              id: item.id,
+            })),
+          )
+        : buildRoutePairGeoJson(route, 'optimized'),
+    [demoVehicleRoutes, route],
+  )
+  const shortestRouteGeoJson = useMemo(
+    () =>
+      demoVehicleRoutes.length > 0
+        ? buildRouteCollectionGeoJson(
+            demoVehicleRoutes.map((item) => ({
+              route: item.shortestRoute,
+              label: 'shortest',
+              id: item.id,
+            })),
+          )
+        : buildRoutePairGeoJson(shortestRoute, 'shortest'),
+    [demoVehicleRoutes, shortestRoute],
+  )
+  const vehicleGeoJson = useMemo(
+    () =>
+      demoVehicleRoutes.length > 0
+        ? buildVehiclesGeoJson(demoVehiclePositions)
+        : buildVehicleGeoJson(vehiclePosition),
+    [demoVehiclePositions, demoVehicleRoutes.length, vehiclePosition],
+  )
   const routeAvoidanceHotspots = useMemo(
-    () => buildRouteAvoidanceHotspots(crowdHeatmap, trafficInfluence, eventInfluence),
-    [crowdHeatmap, trafficInfluence, eventInfluence],
+    () => buildRouteAvoidanceHotspots(crowdHeatmap, trafficInfluence, {
+      type: 'FeatureCollection',
+      features: [...eventInfluence.features, ...injectedEvents.features],
+    }),
+    [crowdHeatmap, eventInfluence.features, injectedEvents.features, trafficInfluence],
   )
 
   useEffect(() => {
@@ -89,6 +146,14 @@ export default function App() {
   useEffect(() => {
     endPointRef.current = endPoint
   }, [endPoint])
+
+  useEffect(() => {
+    demoVehicleRoutesRef.current = demoVehicleRoutes
+  }, [demoVehicleRoutes])
+
+  useEffect(() => {
+    demoVehiclePositionsRef.current = demoVehiclePositions
+  }, [demoVehiclePositions])
 
   useEffect(() => {
     let cancelled = false
@@ -212,6 +277,8 @@ export default function App() {
         setEndPoint(null)
         setRoute(null)
         setShortestRoute(null)
+        setDemoVehicleRoutes([])
+        setDemoVehiclePositions([])
         return
       }
 
@@ -227,6 +294,32 @@ export default function App() {
   useEffect(() => {
     setSourceData(mapRef.current, MAP_SOURCE_IDS.trafficSignals, signals)
   }, [signals])
+
+  useEffect(() => {
+    if (signals.features.length === 0) {
+      return
+    }
+
+    const intervalId = window.setInterval(() => {
+      setSignals((currentSignals) => ({
+        ...currentSignals,
+        features: currentSignals.features.map((feature, index) => ({
+          ...feature,
+          properties: {
+            ...feature.properties,
+            signalState:
+              (Number(feature.properties?.signalId ?? index) + Math.floor(Date.now() / 4000)) % 2 === 0
+                ? 'go'
+                : 'stop',
+          },
+        })),
+      }))
+    }, 4000)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [signals.features.length])
 
   useEffect(() => {
     const map = mapRef.current
@@ -250,8 +343,11 @@ export default function App() {
   }, [trafficInfluence])
 
   useEffect(() => {
-    setSourceData(mapRef.current, MAP_SOURCE_IDS.eventInfluence, eventInfluence)
-  }, [eventInfluence])
+    setSourceData(mapRef.current, MAP_SOURCE_IDS.eventInfluence, {
+      type: 'FeatureCollection',
+      features: [...eventInfluence.features, ...injectedEvents.features],
+    })
+  }, [eventInfluence, injectedEvents])
 
   useEffect(() => {
     setSourceData(mapRef.current, MAP_SOURCE_IDS.clickPoints, clickPoints)
@@ -274,6 +370,10 @@ export default function App() {
       return
     }
 
+    if (demoVehicleRoutes.length > 0) {
+      return
+    }
+
     const nextShortestRoute = router.route(startPoint, endPoint)
     const nextOptimizedRoute = router.route(startPoint, endPoint, { hotspots: routeAvoidanceHotspots })
     if (!nextShortestRoute || !nextOptimizedRoute) {
@@ -284,7 +384,7 @@ export default function App() {
     setError('')
     setShortestRoute(nextShortestRoute)
     setRoute(nextOptimizedRoute)
-  }, [endPoint, routeAvoidanceHotspots, router, startPoint])
+  }, [demoVehicleRoutes.length, endPoint, routeAvoidanceHotspots, router, startPoint])
 
   function generateBusyDemoRoute() {
     if (!router) {
@@ -292,16 +392,100 @@ export default function App() {
       return
     }
 
-    const demoPoints = pickBusyDemoPoints(router, routeAvoidanceHotspots)
-    if (!demoPoints) {
+    const generatedRoutes: DemoVehicleRoute[] = []
+    const fleetPoints = pickBusyDemoFleetPoints(router, routeAvoidanceHotspots, vehicleCount)
+
+    for (let index = 0; index < fleetPoints.length; index += 1) {
+      const demoPoints = fleetPoints[index]
+      const nextShortestRoute = router.route(demoPoints.startPoint, demoPoints.endPoint)
+      const nextOptimizedRoute = router.route(demoPoints.startPoint, demoPoints.endPoint, {
+        hotspots: routeAvoidanceHotspots,
+      })
+
+      if (!nextShortestRoute || !nextOptimizedRoute) {
+        continue
+      }
+
+      generatedRoutes.push({
+        id: index + 1,
+        speedKph: 30 + Math.floor(Math.random() * 91),
+        start: demoPoints.startPoint,
+        end: demoPoints.endPoint,
+        shortestRoute: nextShortestRoute,
+        optimizedRoute: nextOptimizedRoute,
+      })
+    }
+
+    if (generatedRoutes.length === 0) {
       setError('Busy demo route is not available yet.')
       return
     }
 
     setError('')
-    setStartPoint(demoPoints.startPoint)
-    setEndPoint(demoPoints.endPoint)
+    setStartPoint(null)
+    setEndPoint(null)
+    setShortestRoute(generatedRoutes[0]?.shortestRoute ?? null)
+    setRoute(generatedRoutes[0]?.optimizedRoute ?? null)
+    setDemoVehicleRoutes(generatedRoutes)
   }
+
+  function injectLiveEvent() {
+    const eventCenter = mapRef.current?.getCenter()
+    const coordinate: Coordinate = eventCenter
+      ? [eventCenter.lng, eventCenter.lat]
+      : routeAvoidanceHotspots[0]?.coordinate ?? [77.5946, 12.9716]
+
+    setInjectedEvents({
+      type: 'FeatureCollection',
+      features: [
+        {
+          type: 'Feature',
+          properties: {
+            pincode: selectedPincode,
+            label: `Injected Event ${new Date().toLocaleTimeString()}`,
+            category: 'event',
+            severity: 'Severe',
+            radius_meters: 1800,
+            penalty: 4.5,
+          },
+          geometry: {
+            type: 'Point',
+            coordinates: coordinate,
+          },
+        },
+      ],
+    })
+  }
+
+  useEffect(() => {
+    if (!router || demoVehicleRoutesRef.current.length === 0 || demoVehiclePositionsRef.current.length === 0) {
+      return
+    }
+
+    const nextRoutes = demoVehicleRoutesRef.current
+      .map((vehicle) => {
+        const currentPosition =
+          demoVehiclePositionsRef.current.find((item) => item.id === vehicle.id)?.position ?? vehicle.start
+        const nextOptimizedRoute = router.route(currentPosition, vehicle.end, {
+          hotspots: routeAvoidanceHotspots,
+        })
+
+        if (!nextOptimizedRoute) {
+          return null
+        }
+
+        return {
+          ...vehicle,
+          start: currentPosition,
+          optimizedRoute: nextOptimizedRoute,
+        }
+      })
+      .filter((item): item is DemoVehicleRoute => item !== null)
+
+    if (nextRoutes.length > 0) {
+      setDemoVehicleRoutes(nextRoutes)
+    }
+  }, [injectedEvents, routeAvoidanceHotspots, router])
 
   useEffect(() => {
     if (vehicleAnimationFrameRef.current) {
@@ -311,8 +495,70 @@ export default function App() {
 
     vehicleAnimationStartRef.current = null
 
+    if (demoVehicleRoutes.length > 0) {
+      setVehiclePosition(null)
+      setDemoVehiclePositions(
+        demoVehicleRoutes.map((item) => ({
+          id: item.id,
+          position: item.optimizedRoute.coordinates[0] ?? item.start,
+        })),
+      )
+
+      const routeMetrics = demoVehicleRoutes.map((item) => ({
+        id: item.id,
+        speedMetersPerSecond: item.speedKph / 3.6,
+        metrics: buildRouteMetrics(item.optimizedRoute.coordinates),
+      }))
+
+      const animateFleet = (timestamp: number) => {
+        if (vehicleAnimationStartRef.current === null) {
+          vehicleAnimationStartRef.current = timestamp
+        }
+
+        const elapsedSeconds = (timestamp - vehicleAnimationStartRef.current) / 1000
+        const nextPositions = routeMetrics.map((item) => {
+          const traveledDistance = elapsedSeconds * item.speedMetersPerSecond
+          const position =
+            samplePositionAlongRoute(
+              item.metrics.path,
+              item.metrics.cumulativeDistances,
+              traveledDistance,
+            ) ?? item.metrics.path[item.metrics.path.length - 1]
+
+          return {
+            id: item.id,
+            position,
+          }
+        })
+
+        setDemoVehiclePositions(nextPositions)
+
+        const shouldContinue = routeMetrics.some((item) => {
+          const traveledDistance = elapsedSeconds * item.speedMetersPerSecond
+          return traveledDistance < item.metrics.totalDistanceMeters
+        })
+
+        if (shouldContinue) {
+          vehicleAnimationFrameRef.current = requestAnimationFrame(animateFleet)
+          return
+        }
+
+        vehicleAnimationFrameRef.current = null
+      }
+
+      vehicleAnimationFrameRef.current = requestAnimationFrame(animateFleet)
+
+      return () => {
+        if (vehicleAnimationFrameRef.current) {
+          cancelAnimationFrame(vehicleAnimationFrameRef.current)
+          vehicleAnimationFrameRef.current = null
+        }
+      }
+    }
+
     if (!route || route.coordinates.length < 2) {
       setVehiclePosition(null)
+      setDemoVehiclePositions([])
       return
     }
 
@@ -350,7 +596,7 @@ export default function App() {
         vehicleAnimationFrameRef.current = null
       }
     }
-  }, [route, vehicleSpeedKph])
+  }, [demoVehicleRoutes, route, vehicleSpeedKph])
 
   useEffect(() => {
     if (!route || !mapRef.current) {
@@ -377,6 +623,12 @@ export default function App() {
         setShowTrafficSignals={setShowTrafficSignals}
         vehicleSpeedKph={vehicleSpeedKph}
         setVehicleSpeedKph={setVehicleSpeedKph}
+        vehicleCount={vehicleCount}
+        setVehicleCount={setVehicleCount}
+        clearDemoVehicles={() => {
+          setDemoVehicleRoutes([])
+          setDemoVehiclePositions([])
+        }}
         setStartPoint={setStartPoint as (value: null) => void}
         setEndPoint={setEndPoint as (value: null) => void}
         setRoute={setRoute as (value: null) => void}
@@ -392,6 +644,7 @@ export default function App() {
         error={error}
         connectorError={connectorError}
         generateBusyDemoRoute={generateBusyDemoRoute}
+        injectLiveEvent={injectLiveEvent}
       />
     </main>
   )

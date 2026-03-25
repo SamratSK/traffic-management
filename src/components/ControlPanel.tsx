@@ -26,6 +26,9 @@ type ControlPanelProps = {
   setShowTrafficSignals: (value: boolean) => void
   vehicleSpeedKph: number
   setVehicleSpeedKph: (value: number) => void
+  vehicleCount: number
+  setVehicleCount: (value: number) => void
+  clearDemoVehicles: () => void
   setStartPoint: (value: null) => void
   setEndPoint: (value: null) => void
   setRoute: (value: null) => void
@@ -41,6 +44,7 @@ type ControlPanelProps = {
   error: string
   connectorError: string
   generateBusyDemoRoute: () => void
+  injectLiveEvent: () => void
 }
 
 export function ControlPanel({
@@ -55,6 +59,9 @@ export function ControlPanel({
   setShowTrafficSignals,
   vehicleSpeedKph,
   setVehicleSpeedKph,
+  vehicleCount,
+  setVehicleCount,
+  clearDemoVehicles,
   setStartPoint,
   setEndPoint,
   setRoute,
@@ -70,6 +77,7 @@ export function ControlPanel({
   error,
   connectorError,
   generateBusyDemoRoute,
+  injectLiveEvent,
 }: ControlPanelProps) {
   return (
     <section className="control-card">
@@ -129,6 +137,20 @@ export function ControlPanel({
         />
       </div>
 
+      <div className="slider-panel">
+        <div className="slider-header">
+          <span className="field-label">Random Vehicle Count</span>
+          <strong>{vehicleCount}</strong>
+        </div>
+        <input
+          type="number"
+          min="1"
+          max="25"
+          value={vehicleCount}
+          onChange={(event) => setVehicleCount(Math.max(1, Math.min(25, Number(event.target.value) || 1)))}
+        />
+      </div>
+
       <div className="instructions">
         <p>1. Click once to place the start point.</p>
         <p>2. Click again to place the destination and compute the route.</p>
@@ -139,6 +161,9 @@ export function ControlPanel({
         <button type="button" onClick={generateBusyDemoRoute}>
           Pick Random Points
         </button>
+        <button type="button" onClick={injectLiveEvent}>
+          Inject Event
+        </button>
         <button
           type="button"
           onClick={() => {
@@ -146,6 +171,7 @@ export function ControlPanel({
             setEndPoint(null)
             setRoute(null)
             setShortestRoute(null)
+            clearDemoVehicles()
             setError('')
           }}
         >

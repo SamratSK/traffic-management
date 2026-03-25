@@ -159,7 +159,7 @@ export function ensureMapLayers(map: Map) {
       type: 'circle',
       source: MAP_SOURCE_IDS.eventInfluence,
       paint: {
-        'circle-color': '#7c3aed',
+        'circle-color': ['match', ['get', 'severity'], 'Severe', '#be123c', 'Major', '#7c3aed', '#a855f7'],
         'circle-opacity': 0.14,
         'circle-stroke-width': 1.2,
         'circle-stroke-color': 'rgba(255,255,255,0.3)',
@@ -268,7 +268,7 @@ export function ensureMapLayers(map: Map) {
       source: MAP_SOURCE_IDS.trafficSignals,
       minzoom: 11.5,
       paint: {
-        'circle-color': ['match', ['get', 'kind'], 'crossing', '#ef4444', '#b91c1c'],
+        'circle-color': ['match', ['get', 'signalState'], 'go', '#16a34a', '#dc2626'],
         'circle-radius': ['interpolate', ['linear'], ['zoom'], 11.5, 2.5, 14, 4.5, 17, 6.5],
         'circle-stroke-width': 1.2,
         'circle-stroke-color': 'rgba(255,255,255,0.9)',
