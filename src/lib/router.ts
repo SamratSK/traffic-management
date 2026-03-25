@@ -138,6 +138,15 @@ export class OfflineRouter {
     return null
   }
 
+  nearestRoadCoordinate(point: Coordinate): Coordinate | null {
+    const nodeId = this.findNearestNode(point)
+    if (nodeId === null) {
+      return null
+    }
+
+    return this.nodes.get(nodeId) ?? null
+  }
+
   private pickLowestScore(openSet: Map<number, QueuedNode>): QueuedNode | null {
     let current: QueuedNode | null = null
 

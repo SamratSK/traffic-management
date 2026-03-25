@@ -137,7 +137,7 @@ export function ControlPanel({
 
       <div className="actions">
         <button type="button" onClick={generateBusyDemoRoute}>
-          Busy Demo Route
+          Pick Random Points
         </button>
         <button
           type="button"

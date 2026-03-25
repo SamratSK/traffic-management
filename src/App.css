@@ -19,12 +19,15 @@
   left: 1rem;
   z-index: 2;
   width: min(24rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
   padding: 1rem;
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 1.25rem;
   background: rgba(255, 251, 245, 0.88);
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.16);
   backdrop-filter: blur(14px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .eyebrow,
@@ -249,6 +252,7 @@
     bottom: 1rem;
     left: 1rem;
     width: auto;
+    max-height: min(70vh, calc(100vh - 2rem));
   }
 
   .actions {

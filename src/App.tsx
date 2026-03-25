@@ -287,7 +287,12 @@ export default function App() {
   }, [endPoint, routeAvoidanceHotspots, router, startPoint])
 
   function generateBusyDemoRoute() {
-    const demoPoints = pickBusyDemoPoints(routeAvoidanceHotspots)
+    if (!router) {
+      setError('Road graph is still loading.')
+      return
+    }
+
+    const demoPoints = pickBusyDemoPoints(router, routeAvoidanceHotspots)
     if (!demoPoints) {
       setError('Busy demo route is not available yet.')
       return
