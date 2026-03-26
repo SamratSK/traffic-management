@@ -7,7 +7,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/bnmit-api': {
-        target: 'http://127.0.0.1:5000',
+        target: 'http://10.235.32.214:5000',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/bnmit-api/, ''),
       },

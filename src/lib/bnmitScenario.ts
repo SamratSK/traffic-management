@@ -1,5 +1,5 @@
 import { BENGALURU_BOUNDS, BENGALURU_CENTER } from '../constants/map'
-import type { BnmitApiSnapshot, BnmitCrowdSector, BnmitEvent, BnmitTrafficIncident } from './bnmitApi'
+import type { BnmitApiSnapshot, BnmitCrowdSector, BnmitEvent, BnmitTrafficIncident, BnmitUserEvent } from './bnmitApi'
 import type { Coordinate } from '../types/offline'
 import type { ScenarioIncident, ScenarioItemCategory } from '../types/runtime'
 
@@ -54,11 +54,26 @@ function trafficRadiusKm(incident: BnmitTrafficIncident) {
   return 0.4
 }
 
+function peakTrafficRadiusKm(incident: BnmitTrafficIncident) {
+  const severity = incident.traffic_severity.toLowerCase()
+  if (severity === 'major') return 1.25
+  if (severity === 'moderate') return 0.96
+  if (severity === 'minor') return 0.72
+  return 0.55
+}
+
 function eventRadiusKm(eventItem: BnmitEvent) {
   const venue = eventItem.venue_type.toLowerCase()
   if (venue.includes('market')) return 1.15
   if (venue.includes('pandal')) return 1
   return 0.82
+}
+
+function userEventRadiusKm(eventItem: BnmitUserEvent) {
+  if (eventItem.traffic_score >= 80) return 1.35
+  if (eventItem.traffic_score >= 55) return 1.1
+  if (eventItem.expected_crowd >= 2000) return 0.95
+  return 0.72
 }
 
 function bnmitHotspot(
@@ -116,6 +131,36 @@ export function buildBnmitHotspots(snapshot: BnmitApiSnapshot, pincode: string, 
     slot += 1
   })
 
+  snapshot.peakTraffic.slice(0, 4).forEach((trafficItem, index) => {
+    hotspots.push(
+      bnmitHotspot(
+        `bnmit-traffic-peak-${index}-${hashString(trafficItem.location)}`,
+        `Peak ${trafficItem.traffic_severity}`,
+        `[BNMIT Peak] ${trafficItem.location}. ${trafficItem.details}`,
+        coordinateFromPincode(pincode, slot),
+        peakTrafficRadiusKm(trafficItem),
+        'civic',
+        createdAt,
+      ),
+    )
+    slot += 1
+  })
+
+  snapshot.topTraffic.slice(0, 5).forEach((trafficItem, index) => {
+    hotspots.push(
+      bnmitHotspot(
+        `bnmit-traffic-top-${index}-${hashString(trafficItem.location)}`,
+        `Top5 ${trafficItem.traffic_severity}`,
+        `[BNMIT Top-5] ${trafficItem.location}. ${trafficItem.details}`,
+        coordinateFromPincode(pincode, slot),
+        peakTrafficRadiusKm(trafficItem) + 0.12,
+        'civic',
+        createdAt,
+      ),
+    )
+    slot += 1
+  })
+
   snapshot.events?.events.slice(0, 3).forEach((eventItem, index) => {
     hotspots.push(
       bnmitHotspot(
@@ -125,6 +170,21 @@ export function buildBnmitHotspots(snapshot: BnmitApiSnapshot, pincode: string, 
         coordinateFromPincode(pincode, slot),
         eventRadiusKm(eventItem),
         categoryFromVenue(eventItem.venue_type),
+        createdAt,
+      ),
+    )
+    slot += 1
+  })
+
+  snapshot.userEvents.slice(0, 5).forEach((eventItem) => {
+    hotspots.push(
+      bnmitHotspot(
+        `bnmit-user-event-${eventItem.id}`,
+        eventItem.event_name,
+        `[BNMIT User] ${eventItem.location} on ${eventItem.date}. Crowd ${eventItem.expected_crowd}, traffic score ${eventItem.traffic_score}.`,
+        coordinateFromPincode(eventItem.location || pincode, slot),
+        userEventRadiusKm(eventItem),
+        'cultural',
         createdAt,
       ),
     )

@@ -650,7 +650,7 @@ export function Sidebar(props: SidebarProps) {
         )}
 
         <p className={`runtime-message${props.error ? ' is-error' : ''}`}>
-          {props.error || 'Double click an item to zoom. Use the pencil icon to edit details.'}
+          {props.error || ''}
         </p>
       </aside>
 

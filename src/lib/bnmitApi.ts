@@ -32,12 +32,23 @@ export type BnmitEventsResponse = {
   events: BnmitEvent[]
 }
 
+export type BnmitUserEvent = {
+  id: number
+  event_name: string
+  location: string
+  date: string
+  expected_crowd: number
+  traffic_score: number
+  created_at: string
+}
+
 export type BnmitApiSnapshot = {
   liveTraffic: BnmitTrafficIncident[]
   peakTraffic: BnmitTrafficIncident[]
   topTraffic: BnmitTrafficIncident[]
   crowd: BnmitCrowdResponse | null
   events: BnmitEventsResponse | null
+  userEvents: BnmitUserEvent[]
 }
 
 type BnmitEnvelope<T> = {
@@ -63,12 +74,13 @@ export async function fetchBnmitSnapshot(pincode: string): Promise<BnmitApiSnaps
     throw new Error('Pincode is required for BNMIT API fetch.')
   }
 
-  const [liveTraffic, peakTraffic, crowd, events, topTraffic] = await Promise.all([
+  const [liveTraffic, peakTraffic, crowd, events, topTraffic, userEvents] = await Promise.all([
     fetchEnvelope<BnmitTrafficIncident[]>(`/api/traffic/live?pincode=${encodeURIComponent(normalized)}`),
     fetchEnvelope<BnmitTrafficIncident[]>(`/api/traffic/peak?pincode=${encodeURIComponent(normalized)}`),
     fetchEnvelope<BnmitCrowdResponse>(`/api/crowd?pincode=${encodeURIComponent(normalized)}`),
     fetchEnvelope<BnmitEventsResponse>(`/api/events?pincode=${encodeURIComponent(normalized)}`),
     fetchEnvelope<BnmitTrafficIncident[]>('/api/traffic/top5'),
+    fetchEnvelope<BnmitUserEvent[]>('/api/user_events'),
   ])
 
   return {
@@ -77,5 +89,6 @@ export async function fetchBnmitSnapshot(pincode: string): Promise<BnmitApiSnaps
     crowd: crowd.data ?? null,
     events: events.data ?? null,
     topTraffic: topTraffic.data ?? [],
+    userEvents: userEvents.data ?? [],
   }
 }

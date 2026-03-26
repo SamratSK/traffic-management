@@ -66,6 +66,10 @@ export function BnmitIntelPanel({
           <span>Top-5 Cache</span>
           <strong>{snapshot?.topTraffic.length ?? 0}</strong>
         </div>
+        <div className="stats-kpi">
+          <span>User Events</span>
+          <strong>{snapshot?.userEvents.length ?? 0}</strong>
+        </div>
       </div>
 
       {strongestCrowdSector ? (
@@ -83,7 +87,7 @@ export function BnmitIntelPanel({
 
       {snapshot?.events?.events?.length ? (
         <div className="bnmit-list">
-          {snapshot.events.events.slice(0, 3).map((eventItem) => (
+          {snapshot.events.events.map((eventItem) => (
             <div key={`${eventItem.event_name}-${eventItem.date}`} className="bnmit-list-item">
               <div className="section-title">
                 <CalendarRange className="mini-lucide" />
@@ -103,6 +107,18 @@ export function BnmitIntelPanel({
               <strong>{item.traffic_severity}</strong>
               <p>{item.location}</p>
               <p>{item.details}</p>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {snapshot?.userEvents?.length ? (
+        <div className="bnmit-list">
+          {snapshot.userEvents.slice(0, 4).map((item) => (
+            <div key={item.id} className="bnmit-list-item">
+              <strong>{item.event_name}</strong>
+              <p>{item.location} | {item.date}</p>
+              <p>Crowd {item.expected_crowd} | Score {item.traffic_score}</p>
             </div>
           ))}
         </div>

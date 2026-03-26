@@ -87,7 +87,8 @@
   background: rgba(255, 255, 255, 0.98);
   border-right: 1px solid #e2e8ef;
   box-shadow: 12px 0 30px rgba(15, 23, 42, 0.08);
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .sidebar-header {
@@ -186,7 +187,7 @@
   min-height: 0;
   flex-direction: column;
   gap: 1rem;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .sidebar-section {
@@ -473,8 +474,6 @@
 
 .simulate-panel {
   display: flex;
-  flex: 1;
-  min-height: 0;
   flex-direction: column;
 }
 
@@ -547,6 +546,7 @@
   gap: 0.55rem;
   margin-top: 0.8rem;
 }
+
 
 .bnmit-list-item {
   padding: 0.72rem 0.75rem;
