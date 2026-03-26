@@ -63,6 +63,10 @@ export function ensureMapLayers(map: Map) {
     map.addSource(MAP_SOURCE_IDS.trafficSignals, { type: 'geojson', data: emptyPointCollection() })
   }
 
+  if (!map.getSource(MAP_SOURCE_IDS.trafficSignalDirections)) {
+    map.addSource(MAP_SOURCE_IDS.trafficSignalDirections, { type: 'geojson', data: emptyPointCollection() })
+  }
+
   if (!map.getSource(MAP_SOURCE_IDS.trafficLevels)) {
     map.addSource(MAP_SOURCE_IDS.trafficLevels, { type: 'geojson', data: emptyTrafficCollection() })
   }
@@ -293,21 +297,21 @@ export function ensureMapLayers(map: Map) {
       source: MAP_SOURCE_IDS.trafficSignals,
       minzoom: 11.5,
       paint: {
-        'circle-color': ['match', ['get', 'signalState'], 'go', '#16a34a', 'hold', '#f59e0b', '#dc2626'],
+        'circle-color': '#22c55e',
         'circle-radius': [
           'interpolate',
           ['linear'],
           ['zoom'],
           11.5,
-          ['case', ['get', 'optimized'], 4.8, 3.4],
+          ['case', ['get', 'optimized'], 5.6, 4.2],
           14,
-          ['case', ['get', 'optimized'], 7.2, 5.4],
+          ['case', ['get', 'optimized'], 8.5, 6.6],
           17,
-          ['case', ['get', 'optimized'], 9.5, 7.2],
+          ['case', ['get', 'optimized'], 11, 8.8],
         ],
         'circle-stroke-width': ['case', ['get', 'optimized'], 2, 1.3],
-        'circle-stroke-color': ['case', ['get', 'optimized'], '#f8fafc', 'rgba(255,255,255,0.9)'],
-        'circle-opacity': ['coalesce', ['get', 'signalOpacity'], 0.35],
+        'circle-stroke-color': '#f8fafc',
+        'circle-opacity': 0.9,
       },
     }, firstSymbolLayerId)
   }
@@ -319,22 +323,44 @@ export function ensureMapLayers(map: Map) {
       source: MAP_SOURCE_IDS.trafficSignals,
       minzoom: 11.5,
       paint: {
-        'circle-color': ['match', ['get', 'signalState'], 'go', '#22c55e', 'hold', '#f59e0b', '#ef4444'],
+        'circle-color': '#22c55e',
         'circle-radius': [
           'interpolate',
           ['linear'],
           ['zoom'],
           11.5,
-          ['case', ['get', 'optimized'], 9, 6.5],
+          ['case', ['get', 'optimized'], 11, 8],
           14,
-          ['case', ['get', 'optimized'], 16, 12],
+          ['case', ['get', 'optimized'], 18, 14],
           17,
-          ['case', ['get', 'optimized'], 22, 16],
+          ['case', ['get', 'optimized'], 25, 18],
         ],
         'circle-opacity': ['case', ['get', 'optimized'], 0.18, 0.08],
         'circle-blur': 0.9,
       },
     }, firstSymbolLayerId)
+  }
+
+  if (!map.getLayer('traffic-signals-direction-layer')) {
+    map.addLayer({
+      id: 'traffic-signals-direction-layer',
+      type: 'symbol',
+      source: MAP_SOURCE_IDS.trafficSignalDirections,
+      minzoom: 12.2,
+      layout: {
+        'text-field': ['get', 'glyph'],
+        'text-size': 22,
+        'text-rotate': ['get', 'rotation'],
+        'text-rotation-alignment': 'map',
+        'text-allow-overlap': true,
+        'text-ignore-placement': true,
+      },
+      paint: {
+        'text-color': '#16a34a',
+        'text-halo-color': 'rgba(255,255,255,0.95)',
+        'text-halo-width': 1.8,
+      },
+    })
   }
 
   if (!map.getLayer('incident-zones-layer')) {
@@ -489,6 +515,7 @@ export function ensureMapLayers(map: Map) {
 
 export function resetMapSources(map: Map) {
   setSourceData(map, MAP_SOURCE_IDS.trafficSignals, emptyPointCollection())
+  setSourceData(map, MAP_SOURCE_IDS.trafficSignalDirections, emptyPointCollection())
   setSourceData(map, MAP_SOURCE_IDS.trafficLevels, emptyTrafficCollection())
   setSourceData(map, MAP_SOURCE_IDS.crowdHeatmap, emptyCrowdHeatmapCollection())
   setSourceData(map, MAP_SOURCE_IDS.trafficInfluence, emptyInfluenceCollection())

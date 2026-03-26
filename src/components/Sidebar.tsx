@@ -10,6 +10,8 @@ import {
   Pencil,
   X,
 } from 'lucide-react'
+import { BnmitIntelPanel } from './BnmitIntelPanel'
+import type { BnmitApiSnapshot } from '../lib/bnmitApi'
 
 type ActiveTool = 'vehicle' | 'events' | 'hotspots' | 'simulate'
 
@@ -99,6 +101,12 @@ type SidebarProps = {
   onClearSimulationConsole: () => void
   debugBreakouts: boolean
   onToggleDebugBreakouts: () => void
+  bnmitPincode: string
+  onBnmitPincodeChange: (value: string) => void
+  onRefreshBnmitData: () => void
+  bnmitLoading: boolean
+  bnmitError: string
+  bnmitSnapshot: BnmitApiSnapshot | null
 }
 
 const CATEGORY_OPTIONS = [
@@ -132,6 +140,14 @@ function PencilButton({ onClick }: { onClick: () => void }) {
   )
 }
 
+function RemoveButton({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <button type="button" className="icon-button icon-button-danger" onClick={onClick} aria-label={label}>
+      <X className="mini-lucide" />
+    </button>
+  )
+}
+
 function IncidentEditorModal(props: Pick<
   SidebarProps,
   | 'editingIncident'
@@ -144,39 +160,56 @@ function IncidentEditorModal(props: Pick<
   return (
     <div className="modal-backdrop">
       <div className="modal-panel">
-        <div className="section-heading">
-          <p className="eyebrow">Edit Item</p>
-          <strong>{props.editingIncident.name}</strong>
+        <div className="modal-header">
+          <div>
+            <p className="eyebrow">Edit Item</p>
+            <strong>{props.editingIncident.name}</strong>
+          </div>
+          <button type="button" className="icon-button" onClick={props.onCancelIncidentEdit} aria-label="Close edit dialog">
+            <X className="mini-lucide" />
+          </button>
         </div>
 
-        <label className="field-label" htmlFor="edit-name">Name</label>
-        <input id="edit-name" value={props.editingIncident.name} onChange={(event) => props.onEditDraftChange('name', event.target.value)} />
+        <div className="modal-form">
+          <div className="modal-field">
+            <label className="field-label" htmlFor="edit-name">Name</label>
+            <input id="edit-name" value={props.editingIncident.name} onChange={(event) => props.onEditDraftChange('name', event.target.value)} />
+          </div>
 
-        <label className="field-label" htmlFor="edit-category">Category</label>
-        <select id="edit-category" value={props.editingIncident.category} onChange={(event) => props.onEditDraftChange('category', event.target.value)}>
-          {CATEGORY_OPTIONS.map((category) => (
-            <option key={category} value={category}>{category}</option>
-          ))}
-        </select>
+          <div className="range-grid">
+            <div className="modal-field">
+              <label className="field-label" htmlFor="edit-category">Category</label>
+              <select id="edit-category" value={props.editingIncident.category} onChange={(event) => props.onEditDraftChange('category', event.target.value)}>
+                {CATEGORY_OPTIONS.map((category) => (
+                  <option key={category} value={category}>{category}</option>
+                ))}
+              </select>
+            </div>
 
-        <label className="field-label" htmlFor="edit-radius">Radius (km)</label>
-        <input
-          id="edit-radius"
-          type="number"
-          min="0.1"
-          max="10"
-          step="0.1"
-          value={props.editingIncident.radiusKm}
-          onChange={(event) => props.onEditDraftChange('radiusKm', Number(event.target.value) || 0.5)}
-        />
+            <div className="modal-field">
+              <label className="field-label" htmlFor="edit-radius">Radius (km)</label>
+              <input
+                id="edit-radius"
+                type="number"
+                min="0.1"
+                max="10"
+                step="0.1"
+                value={props.editingIncident.radiusKm}
+                onChange={(event) => props.onEditDraftChange('radiusKm', Number(event.target.value) || 0.5)}
+              />
+            </div>
+          </div>
 
-        <label className="field-label" htmlFor="edit-description">Description</label>
-        <textarea
-          id="edit-description"
-          rows={4}
-          value={props.editingIncident.description}
-          onChange={(event) => props.onEditDraftChange('description', event.target.value)}
-        />
+          <div className="modal-field">
+            <label className="field-label" htmlFor="edit-description">Description</label>
+            <textarea
+              id="edit-description"
+              rows={4}
+              value={props.editingIncident.description}
+              onChange={(event) => props.onEditDraftChange('description', event.target.value)}
+            />
+          </div>
+        </div>
 
         <div className="actions">
           <button type="button" onClick={props.onCancelIncidentEdit}>Cancel</button>
@@ -324,14 +357,36 @@ function VehiclePanel(props: Pick<
         ) : null}
 
         <div className="line-toggle">
-          <button type="button" className={props.sameStartPoint ? 'chip-button is-active' : 'chip-button'} onClick={() => props.onSameStartPointChange(!props.sameStartPoint)}>
+          <button
+            type="button"
+            className={props.sameStartPoint ? 'chip-button is-active' : 'chip-button'}
+            onClick={() => {
+              if (props.sameStartPoint) {
+                props.onSameStartPointChange(false)
+                return
+              }
+              props.onSameStartPointChange(true)
+              props.onPickSharedStart()
+            }}
+          >
             Same Start Point
           </button>
           <button type="button" className="text-action" onClick={props.onPickSharedStart}>{formatCoordinate(props.sharedStartPoint)}</button>
         </div>
 
         <div className="line-toggle">
-          <button type="button" className={props.sameEndPoint ? 'chip-button is-active' : 'chip-button'} onClick={() => props.onSameEndPointChange(!props.sameEndPoint)}>
+          <button
+            type="button"
+            className={props.sameEndPoint ? 'chip-button is-active' : 'chip-button'}
+            onClick={() => {
+              if (props.sameEndPoint) {
+                props.onSameEndPointChange(false)
+                return
+              }
+              props.onSameEndPointChange(true)
+              props.onPickSharedEnd()
+            }}
+          >
             Same End Point
           </button>
           <button type="button" className="text-action" onClick={props.onPickSharedEnd}>{formatCoordinate(props.sharedEndPoint)}</button>
@@ -431,12 +486,12 @@ function IncidentPanel({
           ) : (
             items.map((item) => (
               <article key={item.id} className="entity-row" onDoubleClick={() => onIncidentFocus(item.id)} title="Double click to zoom">
-                <button type="button" className="entity-row-remove" onClick={() => onIncidentRemove(item.id)} aria-label={`Remove ${item.name}`}>
-                  <X className="mini-lucide" />
-                </button>
                 <div className="entity-row-head">
                   <strong>{item.name}</strong>
-                  <PencilButton onClick={() => onIncidentEdit(item.id)} />
+                  <div className="entity-row-actions">
+                    <PencilButton onClick={() => onIncidentEdit(item.id)} />
+                    <RemoveButton onClick={() => onIncidentRemove(item.id)} label={`Remove ${item.name}`} />
+                  </div>
                 </div>
                 <p>{item.radiusKm.toFixed(2)} km radius</p>
                 <p>{item.category}</p>
@@ -582,6 +637,15 @@ export function Sidebar(props: SidebarProps) {
                 ))
               )}
             </div>
+
+            <BnmitIntelPanel
+              pincode={props.bnmitPincode}
+              onPincodeChange={props.onBnmitPincodeChange}
+              onRefresh={props.onRefreshBnmitData}
+              loading={props.bnmitLoading}
+              error={props.bnmitError}
+              snapshot={props.bnmitSnapshot}
+            />
           </section>
         )}
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import type { FeatureCollection, LineString } from 'geojson'
 import type { Map as MapLibreMap } from 'maplibre-gl'
@@ -7,6 +7,8 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import './App.css'
 
 import { LeftToolbar } from './components/LeftToolbar'
+import { fetchBnmitSnapshot, type BnmitApiSnapshot } from './lib/bnmitApi'
+import { buildBnmitHotspots } from './lib/bnmitScenario'
 import { SignalCameraModal } from './components/SignalCameraModal'
 import { Sidebar } from './components/Sidebar'
 import { StatsPanel } from './components/StatsPanel'
@@ -19,6 +21,7 @@ import {
   buildProcessionGeoJson,
   buildRouteGeoJson,
   buildRouteCollectionGeoJson,
+  buildSignalDirectionGeoJson,
   buildVehicleMarkersGeoJson,
   buildVehiclesGeoJson,
   buildVehicleHotspotZonesGeoJson,
@@ -157,6 +160,10 @@ export default function App() {
   const [selectedSignalId, setSelectedSignalId] = useState<number | null>(null)
   const [fps, setFps] = useState(0)
   const [error, setError] = useState('')
+  const [bnmitPincode, setBnmitPincode] = useState('560001')
+  const [bnmitLoading, setBnmitLoading] = useState(false)
+  const [bnmitError, setBnmitError] = useState('')
+  const [bnmitSnapshot, setBnmitSnapshot] = useState<BnmitApiSnapshot | null>(null)
 
   activeToolRef.current = activeTool
   pendingVehicleStartRef.current = pendingVehicleStart
@@ -179,6 +186,31 @@ export default function App() {
       ...current,
     ].slice(0, 80))
   }
+
+  const refreshBnmitData = useCallback(async (targetPincode = bnmitPincode) => {
+    setBnmitLoading(true)
+    setBnmitError('')
+    try {
+      const snapshot = await fetchBnmitSnapshot(targetPincode)
+      setBnmitSnapshot(snapshot)
+      setIncidents((current) => {
+        const preserved = current.filter((item) => !item.id.startsWith('bnmit-'))
+        const imported = buildBnmitHotspots(snapshot, targetPincode)
+        return [...preserved, ...imported]
+      })
+      pushSimulationLog(
+        `BNMIT API synced for ${targetPincode}: ${snapshot.liveTraffic.length} live incidents, ${snapshot.events?.events.length ?? 0} events, hotspots imported`,
+      )
+    } catch (bnmitFetchError) {
+      setBnmitError(
+        bnmitFetchError instanceof Error
+          ? bnmitFetchError.message
+          : 'Unable to load BNMIT API data.',
+      )
+    } finally {
+      setBnmitLoading(false)
+    }
+  }, [bnmitPincode])
 
   useEffect(() => {
     routerRef.current = router
@@ -453,6 +485,10 @@ export default function App() {
     return () => window.cancelAnimationFrame(frameId)
   }, [])
 
+  useEffect(() => {
+    void refreshBnmitData('560001')
+  }, [refreshBnmitData])
+
   const destinationOptions = useMemo(
     () => [
       { value: 'custom', label: 'Custom start and end points' },
@@ -530,6 +566,7 @@ export default function App() {
     () => buildVehicleHotspotZonesGeoJson(simulationSnapshot.vehicleHotspots),
     [simulationSnapshot.vehicleHotspots],
   )
+  const signalDirectionGeoJson = useMemo(() => buildSignalDirectionGeoJson(signalRuntime), [signalRuntime])
   const debugBreakoutPointGeoJson = useMemo(
     () =>
       buildBreakoutWaypointGeoJson(
@@ -813,12 +850,21 @@ export default function App() {
   }, [signalRuntime])
 
   useEffect(() => {
+    setSourceData(mapRef.current, MAP_SOURCE_IDS.trafficSignalDirections, signalDirectionGeoJson)
+  }, [signalDirectionGeoJson])
+
+  useEffect(() => {
     setSourceData(mapRef.current, MAP_SOURCE_IDS.trafficLevels, trafficLevels)
   }, [trafficLevels])
 
   useEffect(() => {
-    updateHeatmapRaster(mapRef.current, incidents, showHeatmap)
-  }, [incidents, showHeatmap])
+    updateHeatmapRaster(
+      mapRef.current,
+      incidents,
+      simulationSnapshot.vehicleHotspots,
+      showHeatmap,
+    )
+  }, [incidents, showHeatmap, simulationSnapshot.vehicleHotspots])
 
   useEffect(() => {
     setSourceData(mapRef.current, MAP_SOURCE_IDS.clickPoints, clickPointsGeoJson)
@@ -1102,6 +1148,14 @@ export default function App() {
         onClearSimulationConsole={() => setSimulationConsole([])}
         debugBreakouts={debugBreakouts}
         onToggleDebugBreakouts={() => setDebugBreakouts((current) => !current)}
+        bnmitPincode={bnmitPincode}
+        onBnmitPincodeChange={setBnmitPincode}
+        onRefreshBnmitData={() => {
+          void refreshBnmitData()
+        }}
+        bnmitLoading={bnmitLoading}
+        bnmitError={bnmitError}
+        bnmitSnapshot={bnmitSnapshot}
         events={eventIncidents}
         hotspots={hotspotIncidents}
         eventRadiusMinKm={eventRadiusMinKm}

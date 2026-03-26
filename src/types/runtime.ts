@@ -66,6 +66,11 @@ export type SignalRuntimeProperties = {
   demandScore: number
   downstreamCongestion: number
   balancingScore: number
+  allowForward: boolean
+  allowLeft: boolean
+  allowRight: boolean
+  directionLabel: string
+  directionAngle: number
   signalOpacity: number
 }
 

@@ -13,6 +13,7 @@ export const MAP_SOURCE_IDS = {
   shortestRoute: 'shortest-route-source',
   clickPoints: 'click-points-source',
   trafficSignals: 'traffic-signals-source',
+  trafficSignalDirections: 'traffic-signal-directions-source',
   trafficLevels: 'traffic-levels-source',
   crowdHeatmap: 'crowd-heatmap-source',
   heatmapRaster: 'heatmap-raster-source',

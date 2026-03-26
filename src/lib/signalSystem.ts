@@ -79,6 +79,37 @@ function downstreamCongestionScore(coordinate: Coordinate, vehicleHotspots: Scen
   }, 0)
 }
 
+function buildDirectionPolicy(
+  signalState: SignalRuntimeProperties['signalState'],
+  balancingScore: number,
+  downstreamCongestion: number,
+) {
+  if (signalState === 'stop') {
+    return {
+      allowForward: true,
+      allowLeft: false,
+      allowRight: false,
+      directionLabel: '',
+      directionAngle: 0,
+    }
+  }
+
+  const preferLeft = balancingScore >= 0
+  const allowForward = signalState === 'go' || downstreamCongestion < 1.35
+  const allowPreferredTurn = true
+  const allowSecondaryTurn = signalState === 'go' && downstreamCongestion < 0.58 && Math.abs(balancingScore) < 1.25
+
+  const allowLeft = preferLeft ? allowPreferredTurn : allowSecondaryTurn
+  const allowRight = preferLeft ? allowSecondaryTurn : allowPreferredTurn
+  return {
+    allowForward,
+    allowLeft,
+    allowRight,
+    directionLabel: '',
+    directionAngle: 0,
+  }
+}
+
 export function buildSignalRuntimeCollection(
   signals: SignalSourceCollection,
   incidents: ScenarioIncident[],
@@ -101,28 +132,24 @@ export function buildSignalRuntimeCollection(
     const movementScore = vehicleProximityScore(coordinate, vehicleSources)
     const downstreamCongestion = downstreamCongestionScore(coordinate, vehicleHotspots)
     const balancingScore = movementScore - downstreamCongestion * 0.85
-    const optimized = movementScore > 0.12
-    const cycleSeconds = Math.min(54, 28 + demandScore * 8)
-    const targetGreenRatio = Math.max(
-      0.22,
-      Math.min(0.76, 0.34 + demandScore * 0.08 + balancingScore * 0.06),
-    )
-    const greenSeconds = Math.min(cycleSeconds - 1, Math.max(8, cycleSeconds * targetGreenRatio))
-    const amberSeconds = 1
-    const redSeconds = Math.max(1, cycleSeconds - greenSeconds - amberSeconds)
+    const optimized = movementScore > 0.08
+    const cycleSeconds = Math.min(24, 14 + demandScore * 3.2)
+    const amberSeconds = 0.65
+    const redSeconds = optimized ? 0.45 : 0.25
+    const greenSeconds = Math.max(6, cycleSeconds - amberSeconds - redSeconds)
     const offsetSeconds = (Number(feature.properties?.signalId ?? index) % 19) * 0.9
     const cyclePositionSeconds = (timestampMs / 1000 + offsetSeconds) % cycleSeconds
 
-    let signalState: SignalRuntimeProperties['signalState'] = 'stop'
-    if (!optimized) {
-      signalState = 'hold'
-    } else if (cyclePositionSeconds <= greenSeconds) {
+    let signalState: SignalRuntimeProperties['signalState'] = 'go'
+    if (cyclePositionSeconds <= greenSeconds) {
       signalState = 'go'
     } else if (cyclePositionSeconds <= greenSeconds + amberSeconds) {
       signalState = 'hold'
-    } else if (cyclePositionSeconds <= greenSeconds + amberSeconds + redSeconds) {
+    } else {
       signalState = 'stop'
     }
+
+    const directionPolicy = buildDirectionPolicy(signalState, balancingScore, downstreamCongestion)
 
     return {
       type: 'Feature' as const,
@@ -136,6 +163,11 @@ export function buildSignalRuntimeCollection(
         demandScore,
         downstreamCongestion,
         balancingScore,
+        allowForward: directionPolicy.allowForward,
+        allowLeft: directionPolicy.allowLeft,
+        allowRight: directionPolicy.allowRight,
+        directionLabel: directionPolicy.directionLabel,
+        directionAngle: directionPolicy.directionAngle,
         signalOpacity: optimized ? Math.min(0.98, 0.58 + demandScore * 0.16) : 0.22,
       },
       geometry: feature.geometry,

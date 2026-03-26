@@ -3,7 +3,7 @@ import type { GeoJSONSource, Map } from 'maplibre-gl'
 
 import type { CrowdHeatmapCollection, InfluenceHotspotCollection } from '../types/cityIntel'
 import type { Coordinate, RouteResult, TrafficRoadProperties } from '../types/offline'
-import type { ScenarioIncident, ScenarioProcession, ScenarioVehicleHotspot } from '../types/runtime'
+import type { ScenarioIncident, ScenarioProcession, ScenarioVehicleHotspot, SignalRuntimeCollection } from '../types/runtime'
 import { BENGALURU_BOUNDS } from '../constants/map'
 
 type VehicleFeature = {
@@ -397,6 +397,40 @@ export function buildVehiclesGeoJson(vehicles: VehicleFeature[]): FeatureCollect
         coordinates: vehicle.position,
       },
     })),
+  }
+}
+
+export function buildSignalDirectionGeoJson(
+  signalRuntime: SignalRuntimeCollection,
+): FeatureCollection<Point, { glyph: string; rotation: number }> {
+  const metersToCoordinate = (coordinate: Coordinate, dxMeters: number, dyMeters: number): Coordinate => {
+    const latDelta = dyMeters / 111_320
+    const lngDelta = dxMeters / (111_320 * Math.cos((coordinate[1] * Math.PI) / 180) || 1)
+    return [coordinate[0] + lngDelta, coordinate[1] + latDelta]
+  }
+
+  return {
+    type: 'FeatureCollection',
+    features: signalRuntime.features
+      .filter((feature) => feature.properties.directionLabel)
+      .map((feature) => {
+        const coordinate = feature.geometry.coordinates as Coordinate
+        const rotation = feature.properties.directionAngle ?? 0
+        const radians = (rotation * Math.PI) / 180
+        const offset = metersToCoordinate(coordinate, Math.cos(radians) * 18, Math.sin(radians) * 18)
+
+        return {
+          type: 'Feature' as const,
+          properties: {
+            glyph: '➜',
+            rotation,
+          },
+          geometry: {
+            type: 'Point' as const,
+            coordinates: offset,
+          },
+        }
+      }),
   }
 }
 

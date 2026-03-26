@@ -2,7 +2,7 @@ import type { Map } from 'maplibre-gl'
 
 import { BENGALURU_BOUNDS, MAP_SOURCE_IDS } from '../constants/map'
 import type { Coordinate } from '../types/offline'
-import type { ScenarioIncident } from '../types/runtime'
+import type { ScenarioIncident, ScenarioVehicleHotspot } from '../types/runtime'
 
 type ImageSourceWithUpdate = {
   updateImage: (options: { url: string; coordinates?: HeatmapImageCoordinates }) => void
@@ -101,6 +101,10 @@ function incidentSpreadKm(incident: ScenarioIncident) {
     : Math.max(0.48, incident.radiusKm * 0.92)
 }
 
+function vehicleHotspotSpreadKm(hotspot: ScenarioVehicleHotspot) {
+  return Math.max(0.18, hotspot.radiusMeters / 1000)
+}
+
 function incidentFieldStrength(distanceKm: number, spreadKm: number, amplitude: number) {
   return amplitude * Math.exp(-((distanceKm ** 2) / (2 * (spreadKm ** 2))))
 }
@@ -110,7 +114,7 @@ function ringFieldStrength(distanceKm: number, ringRadiusKm: number, ringWidthKm
   return amplitude * Math.exp(-((delta ** 2) / (2 * (ringWidthKm ** 2))))
 }
 
-function drawHeatmap(bounds: HeatmapBounds, incidents: ScenarioIncident[]) {
+function drawHeatmap(bounds: HeatmapBounds, incidents: ScenarioIncident[], vehicleHotspots: ScenarioVehicleHotspot[]) {
   const canvas = document.createElement('canvas')
   canvas.width = HEATMAP_WIDTH
   canvas.height = HEATMAP_HEIGHT
@@ -147,6 +151,21 @@ function drawHeatmap(bounds: HeatmapBounds, incidents: ScenarioIncident[]) {
         intensity += ringFieldStrength(distanceKm, ringRadiusKm, ringWidthKm, ringAmplitude)
       })
 
+      vehicleHotspots.forEach((hotspot) => {
+        const [hotspotLng, hotspotLat] = hotspot.coordinate
+        const lngKm = (lng - hotspotLng) * 111.32 * Math.cos(((lat + hotspotLat) * 0.5 * Math.PI) / 180)
+        const latKm = (lat - hotspotLat) * 111.32
+        const distanceKm = Math.sqrt((lngKm ** 2) + (latKm ** 2))
+        const spreadKm = vehicleHotspotSpreadKm(hotspot)
+        const amplitude = clamp(0.18 + hotspot.vehicleShare * 1.15, 0.22, 0.9)
+        const ringRadiusKm = spreadKm * 0.92
+        const ringWidthKm = Math.max(0.05, spreadKm * 0.18)
+        const ringAmplitude = clamp(0.06 + hotspot.vehicleShare * 0.22, 0.08, 0.24)
+
+        intensity += incidentFieldStrength(distanceKm, spreadKm, amplitude)
+        intensity += ringFieldStrength(distanceKm, ringRadiusKm, ringWidthKm, ringAmplitude)
+      })
+
       const normalized = clamp(intensity, 0, 1)
       const [red, green, blue, alpha] = sampleGradient(normalized)
       const offset = (y * HEATMAP_WIDTH + x) * 4
@@ -165,7 +184,12 @@ export function getHeatmapImageCoordinates() {
   return toImageCoordinates(expandBoundsForIncidents([]))
 }
 
-export function updateHeatmapRaster(map: Map | null, incidents: ScenarioIncident[], visible: boolean) {
+export function updateHeatmapRaster(
+  map: Map | null,
+  incidents: ScenarioIncident[],
+  vehicleHotspots: ScenarioVehicleHotspot[],
+  visible: boolean,
+) {
   if (!map) {
     return
   }
@@ -177,7 +201,7 @@ export function updateHeatmapRaster(map: Map | null, incidents: ScenarioIncident
 
   const bounds = expandBoundsForIncidents(incidents)
   source.updateImage({
-    url: visible ? drawHeatmap(bounds, incidents) : createTransparentDataUrl(),
+    url: visible ? drawHeatmap(bounds, incidents, vehicleHotspots) : createTransparentDataUrl(),
     coordinates: toImageCoordinates(bounds),
   })
 }

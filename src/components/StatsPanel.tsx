@@ -29,6 +29,10 @@ function formatSpeed(value: number) {
   return `${value.toFixed(1)} km/h`
 }
 
+function formatDisplaySpeed(value: number) {
+  return formatSpeed(value / 7)
+}
+
 function formatPercent(value: number) {
   return `${Math.round(value)}%`
 }
@@ -56,7 +60,7 @@ export function StatsPanel({ stats, optimizedSignals, onClose, signalStates, his
         </div>
         <div className="stats-kpi">
           <span>Avg Speed</span>
-          <strong>{formatSpeed(stats.averageSpeedKph)}</strong>
+          <strong>{formatDisplaySpeed(stats.averageSpeedKph)}</strong>
         </div>
         <div className="stats-kpi">
           <span>Arrivals</span>
@@ -84,7 +88,7 @@ export function StatsPanel({ stats, optimizedSignals, onClose, signalStates, his
         />
         <div className="stats-meta-row">
           <span>Speed / FPS</span>
-          <strong>{formatSpeed(stats.averageSpeedKph)} / {fps}</strong>
+          <strong>{formatDisplaySpeed(stats.averageSpeedKph)} / {fps}</strong>
         </div>
       </section>
 

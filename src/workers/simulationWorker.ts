@@ -52,6 +52,7 @@ type SimVehicle = {
 
 const MAX_VISIBLE_VEHICLES = 180
 const MAX_VISIBLE_ROUTES = 24
+const SIMULATION_SPEED_MULTIPLIER = 7
 const HOTSPOT_REROUTE_LOOKAHEAD_METERS = 140
 const REROUTE_COOLDOWN_MS = 4200
 const DIRECT_ROUTE_REEVALUATION_MS = 5600
@@ -61,9 +62,89 @@ const CLUSTER_RELEASE_FACTOR = 1.35
 const SIGNAL_LOOKAHEAD_METERS = 85
 const SIGNAL_CAPTURE_RADIUS_METERS = 18
 const SIGNAL_STOP_BUFFER_METERS = 10
+const RAD_TO_DEG = 180 / Math.PI
 
 function normalizedAngleRadians(from: Coordinate, to: Coordinate) {
   return Math.atan2(to[1] - from[1], to[0] - from[0])
+}
+
+function normalizeAngleDelta(angle: number) {
+  return Math.atan2(Math.sin(angle), Math.cos(angle))
+}
+
+function analyzeSignalTurn(vehicle: SimVehicle, signalCoordinate: Coordinate) {
+  let nearestIndex = -1
+  let nearestDistance = Number.POSITIVE_INFINITY
+  let nearestProjectionT = 0
+
+  for (let index = 1; index < vehicle.routeMetrics.path.length; index += 1) {
+    const projection = projectPointOntoSegment(
+      signalCoordinate,
+      vehicle.routeMetrics.path[index - 1],
+      vehicle.routeMetrics.path[index],
+    )
+    const distance = projection.distanceMeters
+
+    if (distance < nearestDistance) {
+      nearestDistance = distance
+      nearestIndex = index
+      nearestProjectionT = projection.t
+    }
+  }
+
+  if (nearestIndex < 1 || nearestIndex >= vehicle.routeMetrics.path.length) {
+    return {
+      turn: 'forward' as const,
+      headingDegrees: 0,
+    }
+  }
+
+  const segmentStartDistance = vehicle.routeMetrics.cumulativeDistances[nearestIndex - 1] ?? 0
+  const segmentEndDistance = vehicle.routeMetrics.cumulativeDistances[nearestIndex] ?? segmentStartDistance
+  const signalDistanceAlongRoute =
+    segmentStartDistance + (segmentEndDistance - segmentStartDistance) * nearestProjectionT
+
+  const incomingStart =
+    samplePositionAlongRoute(
+      vehicle.routeMetrics.path,
+      vehicle.routeMetrics.cumulativeDistances,
+      Math.max(0, signalDistanceAlongRoute - 32),
+    ) ?? vehicle.routeMetrics.path[Math.max(0, nearestIndex - 1)]
+  const incomingEnd =
+    samplePositionAlongRoute(
+      vehicle.routeMetrics.path,
+      vehicle.routeMetrics.cumulativeDistances,
+      Math.max(0, signalDistanceAlongRoute - 4),
+    ) ?? vehicle.routeMetrics.path[nearestIndex - 1]
+  const outgoingStart =
+    samplePositionAlongRoute(
+      vehicle.routeMetrics.path,
+      vehicle.routeMetrics.cumulativeDistances,
+      Math.min(vehicle.routeMetrics.totalDistanceMeters, signalDistanceAlongRoute + 4),
+    ) ?? vehicle.routeMetrics.path[nearestIndex]
+  const outgoingEnd =
+    samplePositionAlongRoute(
+      vehicle.routeMetrics.path,
+      vehicle.routeMetrics.cumulativeDistances,
+      Math.min(vehicle.routeMetrics.totalDistanceMeters, signalDistanceAlongRoute + 32),
+    ) ?? vehicle.routeMetrics.path[Math.min(vehicle.routeMetrics.path.length - 1, nearestIndex + 1)]
+
+  const incomingAngle = normalizedAngleRadians(incomingStart, incomingEnd)
+  const outgoingAngle = normalizedAngleRadians(outgoingStart, outgoingEnd)
+  const delta = normalizeAngleDelta(outgoingAngle - incomingAngle)
+  const headingDegrees = outgoingAngle * RAD_TO_DEG
+
+  if (Math.abs(delta) < Math.PI / 9) {
+    return {
+      turn: 'forward' as const,
+      headingDegrees,
+    }
+  }
+
+  return {
+    turn: delta > 0 ? 'left' as const : 'right' as const,
+    headingDegrees,
+  }
 }
 
 function sectorOffsetFromVariant(variant: number) {
@@ -101,6 +182,7 @@ let incidents: ScenarioIncident[] = []
 let processions: ScenarioProcession[] = []
 let vehicles: SimVehicle[] = []
 let dynamicVehicleHotspots: ScenarioVehicleHotspot[] = []
+const signalDirectionMemory = new Map<number, { glyph: '' | '↑' | '←' | '→'; headingDegrees: number; visibleUntil: number }>()
 let rerouteQueue: number[] = []
 let intervalId: number | null = null
 let lastTickTimestamp = 0
@@ -365,6 +447,91 @@ function refreshSignalRuntime(now: number) {
     vehicles.filter((vehicle) => !vehicle.arrived).map((vehicle) => vehicle.currentPosition),
     now,
   )
+  annotateSignalDirections()
+}
+
+function annotateSignalDirections() {
+  const now = Date.now()
+  signalRuntime.features.forEach((feature) => {
+    const signalCoordinate = feature.geometry.coordinates as Coordinate
+    let nearestArrow: '' | '↑' | '←' | '→' = ''
+    let nearestHeadingDegrees = 0
+    let nearestDistance = Number.POSITIVE_INFINITY
+
+    vehicles.forEach((vehicle) => {
+      if (vehicle.arrived || metersBetween(vehicle.currentPosition, signalCoordinate) > SIGNAL_LOOKAHEAD_METERS + 40) {
+        return
+      }
+
+      for (let index = 1; index < vehicle.routeMetrics.path.length; index += 1) {
+        const segmentStartDistance = vehicle.routeMetrics.cumulativeDistances[index - 1] ?? 0
+        const segmentEndDistance = vehicle.routeMetrics.cumulativeDistances[index] ?? 0
+
+        if (segmentEndDistance < vehicle.currentDistanceMeters - 2) {
+          continue
+        }
+
+        if (segmentStartDistance > vehicle.currentDistanceMeters + SIGNAL_LOOKAHEAD_METERS) {
+          break
+        }
+
+        const start = vehicle.routeMetrics.path[index - 1]
+        const end = vehicle.routeMetrics.path[index]
+        const projection = projectPointOntoSegment(signalCoordinate, start, end)
+        if (projection.distanceMeters > SIGNAL_CAPTURE_RADIUS_METERS) {
+          continue
+        }
+
+        const distanceAlongRoute =
+          segmentStartDistance + (segmentEndDistance - segmentStartDistance) * projection.t
+        const distanceAheadMeters = distanceAlongRoute - vehicle.currentDistanceMeters
+        if (distanceAheadMeters < 0 || distanceAheadMeters > SIGNAL_LOOKAHEAD_METERS) {
+          continue
+        }
+
+        const turnAnalysis = analyzeSignalTurn(vehicle, signalCoordinate)
+        let glyph: '' | '↑' | '←' | '→' = ''
+        if (turnAnalysis.turn === 'forward' && feature.properties.allowForward) {
+          glyph = '↑'
+        } else if (turnAnalysis.turn === 'left' && feature.properties.allowLeft) {
+          glyph = '←'
+        } else if (turnAnalysis.turn === 'right' && feature.properties.allowRight) {
+          glyph = '→'
+        }
+
+        if (glyph && distanceAheadMeters < nearestDistance) {
+          nearestDistance = distanceAheadMeters
+          nearestArrow = glyph
+          nearestHeadingDegrees = turnAnalysis.headingDegrees
+        }
+        break
+      }
+    })
+
+    const signalId = feature.properties.signalId
+    const remembered = signalDirectionMemory.get(signalId)
+
+    if (nearestArrow) {
+      signalDirectionMemory.set(signalId, {
+        glyph: nearestArrow,
+        headingDegrees: nearestHeadingDegrees,
+        visibleUntil: now + 3000,
+      })
+      feature.properties.directionLabel = nearestArrow
+      feature.properties.directionAngle = nearestHeadingDegrees
+      return
+    }
+
+    if (remembered && remembered.visibleUntil > now) {
+      feature.properties.directionLabel = remembered.glyph
+      feature.properties.directionAngle = remembered.headingDegrees
+      return
+    }
+
+    signalDirectionMemory.delete(signalId)
+    feature.properties.directionLabel = ''
+    feature.properties.directionAngle = 0
+  })
 }
 
 function findBlockingSignal(vehicle: SimVehicle): {
@@ -375,11 +542,7 @@ function findBlockingSignal(vehicle: SimVehicle): {
   let bestMatch: { signalId: number; distanceAheadMeters: number; signalState: 'hold' | 'stop' } | null = null
 
   signalRuntime.features.forEach((feature) => {
-    if (
-      !feature.properties.optimized
-      || feature.properties.signalState === 'go'
-      || (feature.properties.signalState !== 'hold' && feature.properties.signalState !== 'stop')
-    ) {
+    if (!feature.properties.optimized) {
       return
     }
 
@@ -414,11 +577,30 @@ function findBlockingSignal(vehicle: SimVehicle): {
         continue
       }
 
+      const intendedTurn = analyzeSignalTurn(vehicle, signalCoordinate).turn
+      const turnAllowed =
+        (intendedTurn === 'forward' && feature.properties.allowForward)
+        || (intendedTurn === 'left' && feature.properties.allowLeft)
+        || (intendedTurn === 'right' && feature.properties.allowRight)
+
+      let effectiveState: 'hold' | 'stop' | null = null
+      if (!turnAllowed) {
+        effectiveState = 'stop'
+      } else if (feature.properties.signalState === 'hold') {
+        effectiveState = 'hold'
+      } else if (feature.properties.signalState === 'stop') {
+        effectiveState = 'stop'
+      }
+
+      if (!effectiveState) {
+        break
+      }
+
       if (!bestMatch || distanceAheadMeters < bestMatch.distanceAheadMeters) {
         bestMatch = {
           signalId: feature.properties.signalId,
           distanceAheadMeters,
-          signalState: feature.properties.signalState,
+          signalState: effectiveState,
         }
       }
       break
@@ -649,7 +831,7 @@ function ensureTicker() {
         return
       }
 
-      const intendedAdvance = deltaSeconds * (vehicle.baseSpeedKph / 3.6)
+      const intendedAdvance = deltaSeconds * SIMULATION_SPEED_MULTIPLIER * (vehicle.baseSpeedKph / 3.6)
       const blockingSignal = findBlockingSignal(vehicle)
       const blockingDistanceAhead = blockingSignal?.distanceAheadMeters ?? null
       const signalStateAhead = blockingSignal?.signalState ?? null
@@ -682,9 +864,13 @@ function ensureTicker() {
       ) {
         vehicle.currentSpeedKph = 0
       } else if (blockingDistanceAhead !== null && signalStateAhead === 'hold') {
-        vehicle.currentSpeedKph = Math.max(8, vehicle.baseSpeedKph * (blockingDistanceAhead < 26 ? 0.2 : blockingDistanceAhead < 52 ? 0.45 : 0.7))
+        vehicle.currentSpeedKph =
+          Math.max(8, vehicle.baseSpeedKph * SIMULATION_SPEED_MULTIPLIER * (blockingDistanceAhead < 26 ? 0.2 : blockingDistanceAhead < 52 ? 0.45 : 0.7))
       } else {
-        vehicle.currentSpeedKph = remainingDistance < 50 ? Math.max(10, vehicle.baseSpeedKph * 0.45) : vehicle.baseSpeedKph
+        vehicle.currentSpeedKph =
+          remainingDistance < 50
+            ? Math.max(10, vehicle.baseSpeedKph * SIMULATION_SPEED_MULTIPLIER * 0.45)
+            : vehicle.baseSpeedKph * SIMULATION_SPEED_MULTIPLIER
       }
 
       if (vehicle.escapingClusterId) {
