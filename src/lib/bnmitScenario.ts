@@ -47,15 +47,19 @@ function crowdRadiusKm(sector: BnmitCrowdSector) {
 }
 
 function trafficRadiusKm(incident: BnmitTrafficIncident) {
-  const severity = incident.traffic_severity.toLowerCase()
+  const severity = String(incident.traffic_severity ?? 'unknown').toLowerCase()
   if (severity === 'major') return 1.05
   if (severity === 'moderate') return 0.78
   if (severity === 'minor') return 0.52
   return 0.4
 }
 
-function peakTrafficRadiusKm(incident: BnmitTrafficIncident) {
-  const severity = incident.traffic_severity.toLowerCase()
+function trafficSeverityLabel(incident: BnmitTrafficIncident & { peak_traffic_severity?: string }) {
+  return String(incident.traffic_severity ?? incident.peak_traffic_severity ?? 'Unknown')
+}
+
+function peakTrafficRadiusKm(incident: BnmitTrafficIncident & { peak_traffic_severity?: string }) {
+  const severity = trafficSeverityLabel(incident).toLowerCase()
   if (severity === 'major') return 1.25
   if (severity === 'moderate') return 0.96
   if (severity === 'minor') return 0.72
@@ -120,7 +124,7 @@ export function buildBnmitHotspots(snapshot: BnmitApiSnapshot, pincode: string, 
     hotspots.push(
       bnmitHotspot(
         `bnmit-traffic-live-${index}-${hashString(trafficItem.location)}`,
-        `Traffic ${trafficItem.traffic_severity}`,
+        `Traffic ${trafficSeverityLabel(trafficItem)}`,
         `[BNMIT] ${trafficItem.location}. ${trafficItem.details}`,
         coordinateFromPincode(pincode, slot),
         trafficRadiusKm(trafficItem),
@@ -135,10 +139,10 @@ export function buildBnmitHotspots(snapshot: BnmitApiSnapshot, pincode: string, 
     hotspots.push(
       bnmitHotspot(
         `bnmit-traffic-peak-${index}-${hashString(trafficItem.location)}`,
-        `Peak ${trafficItem.traffic_severity}`,
+        `Peak ${trafficSeverityLabel(trafficItem as BnmitTrafficIncident & { peak_traffic_severity?: string })}`,
         `[BNMIT Peak] ${trafficItem.location}. ${trafficItem.details}`,
         coordinateFromPincode(pincode, slot),
-        peakTrafficRadiusKm(trafficItem),
+        peakTrafficRadiusKm(trafficItem as BnmitTrafficIncident & { peak_traffic_severity?: string }),
         'civic',
         createdAt,
       ),
@@ -150,7 +154,7 @@ export function buildBnmitHotspots(snapshot: BnmitApiSnapshot, pincode: string, 
     hotspots.push(
       bnmitHotspot(
         `bnmit-traffic-top-${index}-${hashString(trafficItem.location)}`,
-        `Top5 ${trafficItem.traffic_severity}`,
+        `Top5 ${trafficSeverityLabel(trafficItem)}`,
         `[BNMIT Top-5] ${trafficItem.location}. ${trafficItem.details}`,
         coordinateFromPincode(pincode, slot),
         peakTrafficRadiusKm(trafficItem) + 0.12,

@@ -187,6 +187,10 @@ export default function App() {
     ].slice(0, 80))
   }
 
+  function getExistingLayers(mapInstance: MapLibreMap, layerIds: string[]) {
+    return layerIds.filter((layerId) => Boolean(mapInstance.getLayer(layerId)))
+  }
+
   const refreshBnmitData = useCallback(async (targetPincode = bnmitPincode) => {
     setBnmitLoading(true)
     setBnmitError('')
@@ -731,9 +735,14 @@ export default function App() {
         return
       }
 
-      const signalFeature = mapInstance.queryRenderedFeatures(event.point, {
-        layers: ['traffic-signals-layer', 'traffic-signals-pulse-layer'],
-      })[0]
+      const signalQueryLayers = getExistingLayers(mapInstance, [
+        'traffic-signals-layer',
+        'traffic-signals-pulse-layer',
+      ])
+
+      const signalFeature = signalQueryLayers.length > 0
+        ? mapInstance.queryRenderedFeatures(event.point, { layers: signalQueryLayers })[0]
+        : undefined
 
       if (signalFeature) {
         event.preventDefault?.()
@@ -758,16 +767,24 @@ export default function App() {
         return
       }
 
+      const hoverQueryLayers = getExistingLayers(mapInstance, [
+        'traffic-signals-layer',
+        'traffic-signals-pulse-layer',
+        'incident-zones-layer',
+        'incident-points-layer',
+        'processions-layer',
+        'vehicle-hotspots-layer',
+        'vehicle-hotspots-outline-layer',
+      ])
+
+      if (hoverQueryLayers.length === 0) {
+        mapInstance.getCanvas().style.cursor = ''
+        popup.remove()
+        return
+      }
+
       const features = mapInstance.queryRenderedFeatures(event.point, {
-        layers: [
-          'traffic-signals-layer',
-          'traffic-signals-pulse-layer',
-          'incident-zones-layer',
-          'incident-points-layer',
-          'processions-layer',
-          'vehicle-hotspots-layer',
-          'vehicle-hotspots-outline-layer',
-        ],
+        layers: hoverQueryLayers,
       })
 
       const feature = features[0]
