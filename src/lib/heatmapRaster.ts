@@ -1,6 +1,7 @@
 import type { Map } from 'maplibre-gl'
 
 import { BENGALURU_BOUNDS, MAP_SOURCE_IDS } from '../constants/map'
+import { renderHeatmapWithWasm } from './heatmapWasm'
 import type { Coordinate } from '../types/offline'
 import type { ScenarioIncident, ScenarioVehicleHotspot } from '../types/runtime'
 
@@ -180,6 +181,60 @@ function drawHeatmap(bounds: HeatmapBounds, incidents: ScenarioIncident[], vehic
   return canvas.toDataURL('image/png')
 }
 
+async function drawHeatmapWithKernel(bounds: HeatmapBounds, incidents: ScenarioIncident[], vehicleHotspots: ScenarioVehicleHotspot[]) {
+  const points = [
+    ...incidents.map((incident) => {
+      const spreadKm = incidentSpreadKm(incident)
+      return {
+        lng: incident.coordinate[0],
+        lat: incident.coordinate[1],
+        spreadKm,
+        coreAmplitude: incident.kind === 'event' ? 0.72 : 0.56,
+        ringRadiusKm: spreadKm * 0.9,
+        ringWidthKm: Math.max(0.08, spreadKm * 0.14),
+        ringAmplitude: incident.kind === 'event' ? 0.22 : 0.16,
+      }
+    }),
+    ...vehicleHotspots.map((hotspot) => {
+      const spreadKm = vehicleHotspotSpreadKm(hotspot)
+      return {
+        lng: hotspot.coordinate[0],
+        lat: hotspot.coordinate[1],
+        spreadKm,
+        coreAmplitude: clamp(0.18 + hotspot.vehicleShare * 1.15, 0.22, 0.9),
+        ringRadiusKm: spreadKm * 0.92,
+        ringWidthKm: Math.max(0.05, spreadKm * 0.18),
+        ringAmplitude: clamp(0.06 + hotspot.vehicleShare * 0.22, 0.08, 0.24),
+      }
+    }),
+  ]
+
+  const rgba = await renderHeatmapWithWasm(
+    HEATMAP_WIDTH,
+    HEATMAP_HEIGHT,
+    bounds,
+    0.12,
+    points,
+  )
+
+  if (!rgba) {
+    return drawHeatmap(bounds, incidents, vehicleHotspots)
+  }
+
+  const canvas = document.createElement('canvas')
+  canvas.width = HEATMAP_WIDTH
+  canvas.height = HEATMAP_HEIGHT
+
+  const context = canvas.getContext('2d')
+  if (!context) {
+    return createTransparentDataUrl()
+  }
+
+  const imageData = new ImageData(rgba, HEATMAP_WIDTH, HEATMAP_HEIGHT)
+  context.putImageData(imageData, 0, 0)
+  return canvas.toDataURL('image/png')
+}
+
 export function getHeatmapImageCoordinates() {
   return toImageCoordinates(expandBoundsForIncidents([]))
 }
@@ -200,8 +255,23 @@ export function updateHeatmapRaster(
   }
 
   const bounds = expandBoundsForIncidents(incidents)
-  source.updateImage({
-    url: visible ? drawHeatmap(bounds, incidents, vehicleHotspots) : createTransparentDataUrl(),
-    coordinates: toImageCoordinates(bounds),
+  if (!visible) {
+    source.updateImage({
+      url: createTransparentDataUrl(),
+      coordinates: toImageCoordinates(bounds),
+    })
+    return
+  }
+
+  void drawHeatmapWithKernel(bounds, incidents, vehicleHotspots).then((url) => {
+    const liveSource = map.getSource(MAP_SOURCE_IDS.heatmapRaster) as ImageSourceWithUpdate | undefined
+    if (!liveSource || typeof liveSource.updateImage !== 'function') {
+      return
+    }
+
+    liveSource.updateImage({
+      url,
+      coordinates: toImageCoordinates(bounds),
+    })
   })
 }

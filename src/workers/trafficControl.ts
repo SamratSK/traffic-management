@@ -43,6 +43,8 @@ type CandidateRoute = {
   score: number
 }
 
+export type ReservationMap = Map<string, number>
+
 const CURRENT_CLUSTER_BUCKET = 0.0033
 const CURRENT_CLUSTER_MERGE_METERS = 240
 const ROUTE_PRESSURE_BUCKET = 0.0026
@@ -51,6 +53,9 @@ const ROUTE_PRESSURE_SAMPLE_STEP_METERS = 180
 const ROUTE_PRESSURE_LOOKAHEAD_METERS = 1_800
 const ROUTE_RESERVATION_SAMPLE_STEP_METERS = 160
 const ROUTE_VARIANT_COUNT = 7
+const ROUTE_VARIANT_OFFSETS = [0, -1, 1]
+const ROUTE_STRESS_THRESHOLD = 140
+const routeMetricsCache = new WeakMap<RouteResult, ReturnType<typeof buildRouteMetrics>>()
 
 function combineRoutes(firstRoute: RouteResult, secondRoute: RouteResult): RouteResult {
   return {
@@ -108,7 +113,18 @@ function routePenaltyFromHotspots(route: RouteResult, hotspots: RouteAvoidanceHo
   return totalPenalty
 }
 
-function buildReservationMap(vehicles: TrafficVehicleLike[], excludedVehicleId: number) {
+function getCachedRouteMetrics(route: RouteResult) {
+  const cached = routeMetricsCache.get(route)
+  if (cached) {
+    return cached
+  }
+
+  const metrics = buildRouteMetrics(route.coordinates)
+  routeMetricsCache.set(route, metrics)
+  return metrics
+}
+
+export function buildReservationMap(vehicles: TrafficVehicleLike[], excludedVehicleId?: number) {
   const reservations = new Map<string, number>()
 
   vehicles
@@ -142,12 +158,12 @@ function buildReservationMap(vehicles: TrafficVehicleLike[], excludedVehicleId: 
   return reservations
 }
 
-function routeReservationPenalty(route: RouteResult, reservations: Map<string, number>) {
+function routeReservationPenalty(route: RouteResult, reservations: ReservationMap) {
   if (reservations.size === 0) {
     return 0
   }
 
-  const metrics = buildRouteMetrics(route.coordinates)
+  const metrics = getCachedRouteMetrics(route)
   let penalty = 0
 
   for (let distance = 0; distance <= metrics.totalDistanceMeters; distance += ROUTE_RESERVATION_SAMPLE_STEP_METERS) {
@@ -171,7 +187,7 @@ function routeReservationPenalty(route: RouteResult, reservations: Map<string, n
 function scoreCandidateRoute(
   route: RouteResult,
   hotspots: RouteAvoidanceHotspot[],
-  reservations: Map<string, number>,
+  reservations: ReservationMap,
 ) {
   return route.distanceMeters
     + routePenaltyFromHotspots(route, hotspots)
@@ -182,9 +198,10 @@ function buildCandidateOptions(
   routingContext: RoutingContext,
   vehicle: TrafficVehicleLike,
   hotspots: RouteAvoidanceHotspot[],
-  reservations: Map<string, number>,
+  reservations: ReservationMap,
 ) {
   const candidates: CandidateRoute[] = []
+  const shouldApplyPressureRouting = hotspots.length > 0 || reservations.size > 0
 
   const directNeutral = routingContext.route(vehicle.currentPosition, vehicle.end, {
     hotspots,
@@ -192,17 +209,30 @@ function buildCandidateOptions(
   }) ?? routingContext.route(vehicle.currentPosition, vehicle.end)
 
   if (directNeutral) {
+    const directNeutralScore = scoreCandidateRoute(directNeutral, hotspots, reservations)
     candidates.push({
       route: directNeutral,
       displayRoute: directNeutral,
-      score: scoreCandidateRoute(directNeutral, hotspots, reservations),
+      score: directNeutralScore,
     })
+
+    if (!shouldApplyPressureRouting) {
+      return candidates
+    }
+
+    const routeStress = directNeutralScore - directNeutral.distanceMeters
+
+    if (routeStress < ROUTE_STRESS_THRESHOLD) {
+      return candidates
+    }
   }
 
-  const directLocal = routingContext.route(vehicle.currentPosition, vehicle.end, {
-    hotspots,
-    roadBias: 'prefer-local',
-  })
+  const directLocal = shouldApplyPressureRouting
+    ? routingContext.route(vehicle.currentPosition, vehicle.end, {
+        hotspots,
+        roadBias: 'prefer-local',
+      })
+    : null
 
   if (directLocal) {
     candidates.push({
@@ -212,7 +242,7 @@ function buildCandidateOptions(
     })
   }
 
-  for (let variantOffset = -2; variantOffset <= 2; variantOffset += 1) {
+  for (const variantOffset of ROUTE_VARIANT_OFFSETS) {
     const variant = ((vehicle.routeVariant + variantOffset) % ROUTE_VARIANT_COUNT + ROUTE_VARIANT_COUNT) % ROUTE_VARIANT_COUNT
     const launchCoordinate = routingContext.findDirectionalLaunchCoordinate(
       vehicle.currentPosition,
@@ -489,6 +519,7 @@ export function chooseManagedRoute(
   dynamicVehicleHotspots: ScenarioVehicleHotspot[],
   signalRuntime: SignalRuntimeCollection,
   excludedHotspotSourceIds: string[] = [],
+  reservations?: ReservationMap,
 ) {
   const hotspots = buildScenarioAvoidanceHotspots(
     incidents,
@@ -498,8 +529,8 @@ export function chooseManagedRoute(
     vehicle.targetIncidentId,
     excludedHotspotSourceIds,
   )
-  const reservations = buildReservationMap(vehicles, vehicle.id)
-  const candidates = buildCandidateOptions(routingContext, vehicle, hotspots, reservations)
+  const activeReservations = reservations ?? buildReservationMap(vehicles, vehicle.id)
+  const candidates = buildCandidateOptions(routingContext, vehicle, hotspots, activeReservations)
 
   if (candidates.length === 0) {
     return null

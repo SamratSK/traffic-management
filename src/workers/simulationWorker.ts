@@ -1,7 +1,7 @@
 import { OfflineRouter } from '../lib/router'
 import { metersBetween } from '../lib/geo'
 import { buildSignalRuntimeCollection } from '../lib/signalSystem'
-import { buildRouteMetrics, samplePositionAlongRoute } from '../lib/vehicle'
+import { buildRouteMetrics, findRouteSegmentIndex, samplePositionAlongRoute } from '../lib/vehicle'
 import type { RouteAvoidanceHotspot } from '../types/cityIntel'
 import type { Coordinate, RouteResult } from '../types/offline'
 import type {
@@ -21,6 +21,7 @@ import type {
   SimulationWorkerResponse,
 } from '../types/simulation'
 import {
+  buildReservationMap,
   buildTrafficDistributionHotspots,
   chooseManagedRoute,
   buildScenarioAvoidanceHotspots,
@@ -44,14 +45,14 @@ type SimVehicle = {
   arrived: boolean
   lastRerouteAt: number
   routeVariant: number
+  routeSegmentIndex: number
   escapingClusterId: string | null
   breakoutWaypoint: Coordinate | null
   waypointQueue: Coordinate[]
   lastRouteEvaluationAt: number
 }
 
-const MAX_VISIBLE_VEHICLES = 180
-const MAX_VISIBLE_ROUTES = 24
+const MAX_VISIBLE_ROUTES = 18
 const SIMULATION_SPEED_MULTIPLIER = 7
 const HOTSPOT_REROUTE_LOOKAHEAD_METERS = 140
 const REROUTE_COOLDOWN_MS = 4200
@@ -63,6 +64,7 @@ const SIGNAL_LOOKAHEAD_METERS = 85
 const SIGNAL_CAPTURE_RADIUS_METERS = 18
 const SIGNAL_STOP_BUFFER_METERS = 10
 const RAD_TO_DEG = 180 / Math.PI
+const SNAPSHOT_EVERY_N_TICKS = 1
 
 function normalizedAngleRadians(from: Coordinate, to: Coordinate) {
   return Math.atan2(to[1] - from[1], to[0] - from[0])
@@ -72,62 +74,43 @@ function normalizeAngleDelta(angle: number) {
   return Math.atan2(Math.sin(angle), Math.cos(angle))
 }
 
-function analyzeSignalTurn(vehicle: SimVehicle, signalCoordinate: Coordinate) {
-  let nearestIndex = -1
-  let nearestDistance = Number.POSITIVE_INFINITY
-  let nearestProjectionT = 0
-
-  for (let index = 1; index < vehicle.routeMetrics.path.length; index += 1) {
-    const projection = projectPointOntoSegment(
-      signalCoordinate,
-      vehicle.routeMetrics.path[index - 1],
-      vehicle.routeMetrics.path[index],
-    )
-    const distance = projection.distanceMeters
-
-    if (distance < nearestDistance) {
-      nearestDistance = distance
-      nearestIndex = index
-      nearestProjectionT = projection.t
-    }
-  }
-
-  if (nearestIndex < 1 || nearestIndex >= vehicle.routeMetrics.path.length) {
+function analyzeSignalTurnAtProjection(vehicle: SimVehicle, segmentIndex: number, projectionT: number) {
+  if (segmentIndex < 1 || segmentIndex >= vehicle.routeMetrics.path.length) {
     return {
       turn: 'forward' as const,
       headingDegrees: 0,
     }
   }
 
-  const segmentStartDistance = vehicle.routeMetrics.cumulativeDistances[nearestIndex - 1] ?? 0
-  const segmentEndDistance = vehicle.routeMetrics.cumulativeDistances[nearestIndex] ?? segmentStartDistance
+  const segmentStartDistance = vehicle.routeMetrics.cumulativeDistances[segmentIndex - 1] ?? 0
+  const segmentEndDistance = vehicle.routeMetrics.cumulativeDistances[segmentIndex] ?? segmentStartDistance
   const signalDistanceAlongRoute =
-    segmentStartDistance + (segmentEndDistance - segmentStartDistance) * nearestProjectionT
+    segmentStartDistance + (segmentEndDistance - segmentStartDistance) * projectionT
 
   const incomingStart =
     samplePositionAlongRoute(
       vehicle.routeMetrics.path,
       vehicle.routeMetrics.cumulativeDistances,
       Math.max(0, signalDistanceAlongRoute - 32),
-    ) ?? vehicle.routeMetrics.path[Math.max(0, nearestIndex - 1)]
+    ) ?? vehicle.routeMetrics.path[Math.max(0, segmentIndex - 1)]
   const incomingEnd =
     samplePositionAlongRoute(
       vehicle.routeMetrics.path,
       vehicle.routeMetrics.cumulativeDistances,
       Math.max(0, signalDistanceAlongRoute - 4),
-    ) ?? vehicle.routeMetrics.path[nearestIndex - 1]
+    ) ?? vehicle.routeMetrics.path[segmentIndex - 1]
   const outgoingStart =
     samplePositionAlongRoute(
       vehicle.routeMetrics.path,
       vehicle.routeMetrics.cumulativeDistances,
       Math.min(vehicle.routeMetrics.totalDistanceMeters, signalDistanceAlongRoute + 4),
-    ) ?? vehicle.routeMetrics.path[nearestIndex]
+    ) ?? vehicle.routeMetrics.path[segmentIndex]
   const outgoingEnd =
     samplePositionAlongRoute(
       vehicle.routeMetrics.path,
       vehicle.routeMetrics.cumulativeDistances,
       Math.min(vehicle.routeMetrics.totalDistanceMeters, signalDistanceAlongRoute + 32),
-    ) ?? vehicle.routeMetrics.path[Math.min(vehicle.routeMetrics.path.length - 1, nearestIndex + 1)]
+    ) ?? vehicle.routeMetrics.path[Math.min(vehicle.routeMetrics.path.length - 1, segmentIndex + 1)]
 
   const incomingAngle = normalizedAngleRadians(incomingStart, incomingEnd)
   const outgoingAngle = normalizedAngleRadians(outgoingStart, outgoingEnd)
@@ -181,7 +164,9 @@ let signalRuntime: SignalRuntimeCollection = { type: 'FeatureCollection', featur
 let incidents: ScenarioIncident[] = []
 let processions: ScenarioProcession[] = []
 let vehicles: SimVehicle[] = []
+const vehicleById = new Map<number, SimVehicle>()
 let dynamicVehicleHotspots: ScenarioVehicleHotspot[] = []
+let sharedReservations = new Map<string, number>()
 const signalDirectionMemory = new Map<number, { glyph: '' | '↑' | '←' | '→'; headingDegrees: number; visibleUntil: number }>()
 let rerouteQueue: number[] = []
 let intervalId: number | null = null
@@ -310,6 +295,7 @@ function buildVehicleRoute(
     dynamicVehicleHotspots,
     signalRuntime,
     options.excludedHotspotSourceIds ?? [],
+    sharedReservations,
   )
 
   if (managed) {
@@ -331,6 +317,26 @@ function buildVehicleRoute(
     displayRoute: fallbackRoute,
     score: fallbackRoute.distanceMeters,
   }
+}
+
+function applyRouteToVehicle(vehicle: SimVehicle, route: { route: RouteResult; displayRoute: RouteResult }) {
+  vehicle.route = route.route
+  vehicle.displayRoute = route.displayRoute
+  vehicle.routeMetrics = buildRouteMetrics(route.route.coordinates)
+  vehicle.currentDistanceMeters = 0
+  vehicle.routeSegmentIndex = vehicle.routeMetrics.path.length > 1 ? 1 : 0
+  vehicle.currentPosition = route.route.coordinates[0] ?? vehicle.currentPosition
+}
+
+function rebuildVehicleIndex() {
+  vehicleById.clear()
+  vehicles.forEach((vehicle) => {
+    vehicleById.set(vehicle.id, vehicle)
+  })
+}
+
+function rebuildSharedReservations() {
+  sharedReservations = buildReservationMap(vehicles)
 }
 
 function routeVehicle(vehicle: SimVehicle) {
@@ -361,10 +367,7 @@ function routeVehicle(vehicle: SimVehicle) {
   }
 
   vehicle.start = vehicle.currentPosition
-  vehicle.route = rerouted.route
-  vehicle.displayRoute = rerouted.displayRoute
-  vehicle.routeMetrics = buildRouteMetrics(rerouted.route.coordinates)
-  vehicle.currentDistanceMeters = 0
+  applyRouteToVehicle(vehicle, rerouted)
   vehicle.rerouted = true
   vehicle.lastRerouteAt = now
   vehicle.escapingClusterId = nearbyCluster?.id ?? null
@@ -426,10 +429,7 @@ function tryRecoverDirectRoute(vehicle: SimVehicle, now: number) {
   }
 
   vehicle.start = vehicle.currentPosition
-  vehicle.route = directRoute.route
-  vehicle.displayRoute = directRoute.displayRoute
-  vehicle.routeMetrics = buildRouteMetrics(directRoute.route.coordinates)
-  vehicle.currentDistanceMeters = 0
+  applyRouteToVehicle(vehicle, directRoute)
   vehicle.breakoutWaypoint = null
   vehicle.waypointQueue = []
   vehicle.escapingClusterId = null
@@ -463,7 +463,8 @@ function annotateSignalDirections() {
         return
       }
 
-      for (let index = 1; index < vehicle.routeMetrics.path.length; index += 1) {
+      const startIndex = Math.max(1, vehicle.routeSegmentIndex)
+      for (let index = startIndex; index < vehicle.routeMetrics.path.length; index += 1) {
         const segmentStartDistance = vehicle.routeMetrics.cumulativeDistances[index - 1] ?? 0
         const segmentEndDistance = vehicle.routeMetrics.cumulativeDistances[index] ?? 0
 
@@ -489,7 +490,7 @@ function annotateSignalDirections() {
           continue
         }
 
-        const turnAnalysis = analyzeSignalTurn(vehicle, signalCoordinate)
+        const turnAnalysis = analyzeSignalTurnAtProjection(vehicle, index, projection.t)
         let glyph: '' | '↑' | '←' | '→' = ''
         if (turnAnalysis.turn === 'forward' && feature.properties.allowForward) {
           glyph = '↑'
@@ -551,7 +552,8 @@ function findBlockingSignal(vehicle: SimVehicle): {
       return
     }
 
-    for (let index = 1; index < vehicle.routeMetrics.path.length; index += 1) {
+    const startIndex = Math.max(1, vehicle.routeSegmentIndex)
+    for (let index = startIndex; index < vehicle.routeMetrics.path.length; index += 1) {
       const segmentStartDistance = vehicle.routeMetrics.cumulativeDistances[index - 1] ?? 0
       const segmentEndDistance = vehicle.routeMetrics.cumulativeDistances[index] ?? 0
 
@@ -577,7 +579,7 @@ function findBlockingSignal(vehicle: SimVehicle): {
         continue
       }
 
-      const intendedTurn = analyzeSignalTurn(vehicle, signalCoordinate).turn
+      const intendedTurn = analyzeSignalTurnAtProjection(vehicle, index, projection.t).turn
       const turnAllowed =
         (intendedTurn === 'forward' && feature.properties.allowForward)
         || (intendedTurn === 'left' && feature.properties.allowLeft)
@@ -633,6 +635,7 @@ function buildRouteForSpawn(start: Coordinate, end: Coordinate, targetIncidentId
     arrived: false,
     lastRerouteAt: 0,
     routeVariant: 0,
+    routeSegmentIndex: 0,
     escapingClusterId: null,
     breakoutWaypoint: null,
     waypointQueue: [],
@@ -666,6 +669,7 @@ function createVehicleFromPlan(plan: VehiclePlan, index: number) {
     arrived: false,
     lastRerouteAt: 0,
     routeVariant: index % CLUSTER_ESCAPE_VARIANT_COUNT,
+    routeSegmentIndex: 0,
     escapingClusterId: null,
     breakoutWaypoint: null,
     waypointQueue: [],
@@ -679,10 +683,7 @@ function createVehicleFromPlan(plan: VehiclePlan, index: number) {
     return null
   }
 
-  vehicle.route = route.route
-  vehicle.displayRoute = route.displayRoute
-  vehicle.routeMetrics = buildRouteMetrics(route.route.coordinates)
-  vehicle.currentPosition = route.route.coordinates[0] ?? plan.start
+  applyRouteToVehicle(vehicle, route)
 
   return vehicle
 }
@@ -742,10 +743,7 @@ function buildStats(): SimulationLiveStats {
 }
 
 function postSnapshot() {
-  const visibleVehicles = [
-    ...vehicles.filter((vehicle) => vehicle.rerouted && !vehicle.arrived).slice(0, 60),
-    ...vehicles.filter((vehicle) => !vehicle.rerouted && !vehicle.arrived).slice(0, MAX_VISIBLE_VEHICLES),
-  ].slice(0, MAX_VISIBLE_VEHICLES)
+  const visibleVehicles = vehicles.filter((vehicle) => !vehicle.arrived)
 
   const visibleRoutes = [
     ...vehicles.filter((vehicle) => vehicle.rerouted).slice(0, 12),
@@ -781,6 +779,8 @@ function queueVehiclesForReroute(vehicleIds: number[]) {
 
 function resetFleet() {
   vehicles = []
+  rebuildVehicleIndex()
+  rebuildSharedReservations()
   dynamicVehicleHotspots = []
   rerouteQueue = []
   lastTickTimestamp = 0
@@ -814,9 +814,13 @@ function ensureTicker() {
     lastTickTimestamp = now
     tickCount += 1
 
+    if (rerouteQueue.length > 0) {
+      rebuildSharedReservations()
+    }
+
     const rerouteBatch = rerouteQueue.splice(0, 48)
     rerouteBatch.forEach((vehicleId) => {
-      const vehicle = vehicles.find((item) => item.id === vehicleId)
+      const vehicle = vehicleById.get(vehicleId)
       if (!vehicle || vehicle.arrived) {
         return
       }
@@ -849,6 +853,11 @@ function ensureTicker() {
       }
 
       vehicle.currentDistanceMeters = Math.min(nextDistance, vehicle.routeMetrics.totalDistanceMeters)
+      vehicle.routeSegmentIndex = findRouteSegmentIndex(
+        vehicle.routeMetrics.cumulativeDistances,
+        vehicle.currentDistanceMeters,
+        vehicle.routeSegmentIndex || 1,
+      )
       vehicle.currentPosition =
         samplePositionAlongRoute(
           vehicle.routeMetrics.path,
@@ -932,7 +941,9 @@ function ensureTicker() {
       }
     }
 
-    postSnapshot()
+    if (tickCount % SNAPSHOT_EVERY_N_TICKS === 0) {
+      postSnapshot()
+    }
   }, 200)
 }
 
@@ -943,6 +954,7 @@ function spawnFleet(count: number, sameStartPoint: boolean, sameEndPoint: boolea
 
   vehicles = []
   dynamicVehicleHotspots = []
+  rebuildSharedReservations()
   rerouteQueue = []
   lastVehicleHotspotHash = ''
 
@@ -973,6 +985,7 @@ function spawnFleet(count: number, sameStartPoint: boolean, sameEndPoint: boolea
       arrived: false,
       lastRerouteAt: sameStartPoint || sameEndPoint ? Date.now() - REROUTE_COOLDOWN_MS : 0,
       routeVariant: index % CLUSTER_ESCAPE_VARIANT_COUNT,
+      routeSegmentIndex: 0,
       escapingClusterId: null,
       breakoutWaypoint: null,
       waypointQueue: [],
@@ -989,14 +1002,13 @@ function spawnFleet(count: number, sameStartPoint: boolean, sameEndPoint: boolea
       continue
     }
 
-    vehicle.route = route.route
-    vehicle.displayRoute = route.displayRoute
-    vehicle.routeMetrics = buildRouteMetrics(route.route.coordinates)
-    vehicle.currentPosition = route.route.coordinates[0] ?? start
+    applyRouteToVehicle(vehicle, route)
 
     vehicles.push(vehicle)
   }
 
+  rebuildVehicleIndex()
+  rebuildSharedReservations()
   refreshSignalRuntime(Date.now())
   postSnapshot()
 }
@@ -1008,6 +1020,7 @@ function setFleet(plans: VehiclePlan[]) {
 
   vehicles = []
   dynamicVehicleHotspots = []
+  rebuildSharedReservations()
   rerouteQueue = []
   lastVehicleHotspotHash = ''
   isRunning = false
@@ -1020,6 +1033,8 @@ function setFleet(plans: VehiclePlan[]) {
     }
   })
 
+  rebuildVehicleIndex()
+  rebuildSharedReservations()
   refreshSignalRuntime(Date.now())
   postSnapshot()
 }
@@ -1053,7 +1068,7 @@ self.onmessage = (event: MessageEvent<SimulationWorkerRequest>) => {
       break
     }
     case 'get-vehicle-route': {
-      const vehicle = vehicles.find((item) => item.id === message.vehicleId)
+      const vehicle = vehicleById.get(message.vehicleId)
       const response: SimulationWorkerResponse = {
         type: 'vehicle-route',
         vehicleId: message.vehicleId,

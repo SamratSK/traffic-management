@@ -1,0 +1,1 @@
+/Users/kantheshamurthy/Desktop/traffic-management/wasm/heatmap-kernel/target/wasm32-unknown-unknown/release/heatmap_kernel.wasm: /Users/kantheshamurthy/Desktop/traffic-management/wasm/heatmap-kernel/src/lib.rs

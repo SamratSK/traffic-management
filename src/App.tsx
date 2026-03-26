@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import type { FeatureCollection, LineString } from 'geojson'
 import type { Map as MapLibreMap } from 'maplibre-gl'
@@ -291,7 +291,9 @@ export default function App() {
     worker.onmessage = (event: MessageEvent<SimulationWorkerResponse>) => {
       if (event.data.type === 'snapshot') {
         const snapshot = event.data.payload
-        setSimulationSnapshot(snapshot)
+        startTransition(() => {
+          setSimulationSnapshot(snapshot)
+        })
 
         if (fleetComputeStartedAtRef.current !== null && snapshot.stats.fleetSize === vehiclePlansRef.current.length) {
           const durationSeconds = ((performance.now() - fleetComputeStartedAtRef.current) / 1000).toFixed(2)
@@ -463,17 +465,19 @@ export default function App() {
   }, [selectedSignalId, signalRuntime, simulationSnapshot.visibleRoutes, simulationSnapshot.visibleVehicles, trafficLevels])
 
   useEffect(() => {
-    setStatsHistory((current) => [
-      ...current.slice(-35),
-      {
-        averageSpeedKph: simulationSnapshot.stats.averageSpeedKph,
-        arrivedVehicles: simulationSnapshot.stats.arrivedVehicles,
-        reroutedVehicles: simulationSnapshot.stats.reroutedVehicles,
-        rerouteQueueSize: simulationSnapshot.stats.rerouteQueueSize,
-        optimizedSignals,
-        fps,
-      },
-    ])
+    startTransition(() => {
+      setStatsHistory((current) => [
+        ...current.slice(-35),
+        {
+          averageSpeedKph: simulationSnapshot.stats.averageSpeedKph,
+          arrivedVehicles: simulationSnapshot.stats.arrivedVehicles,
+          reroutedVehicles: simulationSnapshot.stats.reroutedVehicles,
+          rerouteQueueSize: simulationSnapshot.stats.rerouteQueueSize,
+          optimizedSignals,
+          fps,
+        },
+      ])
+    })
   }, [fps, optimizedSignals, simulationSnapshot.stats])
 
   useEffect(() => {
@@ -909,7 +913,7 @@ export default function App() {
     }
 
     const elapsed = performance.now() - heatmapLastUpdatedAtRef.current
-    const throttleMs = 850
+    const throttleMs = 1500
 
     if (elapsed >= throttleMs && heatmapUpdateTimeoutRef.current === null) {
       flushHeatmapUpdate()
