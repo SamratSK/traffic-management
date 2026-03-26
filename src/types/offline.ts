@@ -1,11 +1,18 @@
 export type Coordinate = [number, number]
 
-export type CompactRoadEdge = [number, number, number, Coordinate[]]
-
 export type RoadGraphFile = {
   bbox: [number, number, number, number]
-  nodes: Coordinate[]
-  edges: CompactRoadEdge[]
+  bucketPrecision: number
+  nodeLngs: number[]
+  nodeLats: number[]
+  buckets: Record<string, number[]>
+  nodeOffsets: number[]
+  edgeTargets: number[]
+  edgeWeights: number[]
+  edgeRoadClasses: number[]
+  edgeGeometryStarts: number[]
+  edgeGeometryLengths: number[]
+  edgeCoordinates: number[]
 }
 
 export type OverpassElement = {

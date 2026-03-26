@@ -13,10 +13,12 @@
   },
   "dependencies": {
     "@protomaps/basemaps": "^5.7.2",
+    "lucide-react": "^1.7.0",
     "maplibre-gl": "^5.21.0",
     "pmtiles": "^4.4.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "simpleheat": "^0.4.0",
     "three": "^0.183.2"
   },
   "devDependencies": {
@@ -25,6 +27,7 @@
     "@types/node": "^24.12.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.183.1",
     "@vitejs/plugin-react": "^6.0.1",
     "eslint": "^9.39.4",
     "eslint-plugin-react-hooks": "^7.0.1",

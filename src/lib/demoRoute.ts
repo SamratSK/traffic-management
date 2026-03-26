@@ -19,6 +19,51 @@ function projectedHotspotPoints(router: OfflineRouter, hotspots: RouteAvoidanceH
     )
 }
 
+function expandedRoadCandidates(router: OfflineRouter, hotspots: RouteAvoidanceHotspot[]) {
+  const offsets = [
+    [0, 0],
+    [0.003, 0],
+    [-0.003, 0],
+    [0, 0.003],
+    [0, -0.003],
+    [0.004, 0.002],
+    [-0.004, 0.002],
+    [0.004, -0.002],
+    [-0.004, -0.002],
+    [0.006, 0],
+    [-0.006, 0],
+  ] as const
+
+  const seen = new Set<string>()
+  const candidates: Array<{ hotspot: RouteAvoidanceHotspot; roadPoint: Coordinate }> = []
+
+  for (const hotspot of hotspots) {
+    for (const [lngOffset, latOffset] of offsets) {
+      const snapped = router.nearestRoadCoordinate([
+        hotspot.coordinate[0] + lngOffset,
+        hotspot.coordinate[1] + latOffset,
+      ])
+
+      if (!snapped) {
+        continue
+      }
+
+      const key = coordinateKey(snapped)
+      if (seen.has(key)) {
+        continue
+      }
+
+      seen.add(key)
+      candidates.push({
+        hotspot,
+        roadPoint: snapped,
+      })
+    }
+  }
+
+  return candidates
+}
+
 function farEnoughApart(pointA: Coordinate, pointB: Coordinate) {
   const lngDelta = Math.abs(pointA[0] - pointB[0])
   const latDelta = Math.abs(pointA[1] - pointB[1])
@@ -94,7 +139,7 @@ export function pickBusyDemoFleetPoints(
   }
 
   const uniqueStarts = new Map<string, Coordinate>()
-  for (const item of pool) {
+  for (const item of expandedRoadCandidates(router, [...hotspots].sort((left, right) => right.penalty - left.penalty))) {
     uniqueStarts.set(coordinateKey(item.roadPoint), item.roadPoint)
   }
 
