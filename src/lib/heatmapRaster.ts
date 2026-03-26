@@ -19,8 +19,8 @@ type HeatmapBounds = {
 type GradientColor = readonly [number, number, number, number]
 
 const [[BASE_MIN_LNG, BASE_MIN_LAT], [BASE_MAX_LNG, BASE_MAX_LAT]] = BENGALURU_BOUNDS as [[number, number], [number, number]]
-const HEATMAP_WIDTH = 900
-const HEATMAP_HEIGHT = 720
+const HEATMAP_WIDTH = 640
+const HEATMAP_HEIGHT = 512
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))

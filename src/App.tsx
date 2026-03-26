@@ -114,6 +114,12 @@ export default function App() {
   const sharedPointPickerRef = useRef<SharedPointPicker>(null)
   const nextVehicleIdRef = useRef(1)
   const highlightTimeoutRef = useRef<number | null>(null)
+  const heatmapUpdateTimeoutRef = useRef<number | null>(null)
+  const heatmapLastUpdatedAtRef = useRef(0)
+  const pendingHeatmapInputsRef = useRef<{
+    incidents: ScenarioIncident[]
+    vehicleHotspots: SimulationSnapshot['vehicleHotspots']
+  } | null>(null)
   const vehiclePlansRef = useRef<VehiclePlan[]>([])
   const fleetComputeStartedAtRef = useRef<number | null>(null)
   const previousReroutedIdsRef = useRef<Set<number>>(new Set())
@@ -875,13 +881,54 @@ export default function App() {
   }, [trafficLevels])
 
   useEffect(() => {
-    updateHeatmapRaster(
-      mapRef.current,
+    if (!showHeatmap) {
+      pendingHeatmapInputsRef.current = null
+      if (heatmapUpdateTimeoutRef.current !== null) {
+        window.clearTimeout(heatmapUpdateTimeoutRef.current)
+        heatmapUpdateTimeoutRef.current = null
+      }
+      updateHeatmapRaster(mapRef.current, incidents, simulationSnapshot.vehicleHotspots, false)
+      return
+    }
+
+    pendingHeatmapInputsRef.current = {
       incidents,
-      simulationSnapshot.vehicleHotspots,
-      showHeatmap,
-    )
+      vehicleHotspots: simulationSnapshot.vehicleHotspots,
+    }
+
+    const flushHeatmapUpdate = () => {
+      const pending = pendingHeatmapInputsRef.current
+      heatmapUpdateTimeoutRef.current = null
+      if (!pending) {
+        return
+      }
+
+      heatmapLastUpdatedAtRef.current = performance.now()
+      updateHeatmapRaster(mapRef.current, pending.incidents, pending.vehicleHotspots, true)
+      pendingHeatmapInputsRef.current = null
+    }
+
+    const elapsed = performance.now() - heatmapLastUpdatedAtRef.current
+    const throttleMs = 850
+
+    if (elapsed >= throttleMs && heatmapUpdateTimeoutRef.current === null) {
+      flushHeatmapUpdate()
+      return
+    }
+
+    if (heatmapUpdateTimeoutRef.current === null) {
+      heatmapUpdateTimeoutRef.current = window.setTimeout(
+        flushHeatmapUpdate,
+        Math.max(80, throttleMs - elapsed),
+      )
+    }
   }, [incidents, showHeatmap, simulationSnapshot.vehicleHotspots])
+
+  useEffect(() => () => {
+    if (heatmapUpdateTimeoutRef.current !== null) {
+      window.clearTimeout(heatmapUpdateTimeoutRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     setSourceData(mapRef.current, MAP_SOURCE_IDS.clickPoints, clickPointsGeoJson)
